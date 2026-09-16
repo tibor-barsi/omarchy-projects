@@ -19,7 +19,7 @@ BarWidget {
 
   readonly property string home: Quickshell.env("HOME")
   readonly property string scriptPath: home + "/.config/omarchy/plugins/io.github.tibor-barsi.projects/projects.py"
-  readonly property string projectsDir: String(setting("projectsDir", "~/data/_Github"))
+  readonly property string projectsDir: String(setting("projectsDir", "~/data/projects"))
   readonly property string defaultAgent: {
     var value = String(setting("defaultAgent", "none"))
     return value === "none" ? "" : value

@@ -43,7 +43,7 @@ Configured through the Omarchy settings panel, or directly in
 
 | Key | Default | Meaning |
 |---|---|---|
-| `projectsDir` | `~/data/_Github` | Folder holding one subdirectory per project |
+| `projectsDir` | `~/data/projects` | Folder holding one subdirectory per project |
 | `refreshIntervalSec` | `120` | How often the roster refreshes |
 | `defaultAgent` | `none` | Agent started for projects with no layout file |
 
@@ -118,7 +118,7 @@ omarchy-shell projects reload
 The backend is also usable on its own:
 
 ```bash
-python3 projects.py report --root ~/data/_Github   # JSON roster
+python3 projects.py report --root ~/data/projects   # JSON roster
 python3 projects.py open my-project                     # focus or build
 python3 projects.py state                          # print the state file path
 ```

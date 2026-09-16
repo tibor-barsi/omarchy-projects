@@ -17,7 +17,7 @@
     "aliases": ["projects", "roster"],
     "allowMultiple": false,
     "defaults": {
-      "projectsDir": "~/data/_Github",
+      "projectsDir": "~/data/projects",
       "refreshIntervalSec": 120,
       "defaultAgent": "none"
     },
@@ -26,7 +26,7 @@
         "key": "projectsDir",
         "type": "path",
         "label": "Projects folder",
-        "defaultValue": "~/data/_Github",
+        "defaultValue": "~/data/projects",
         "description": "Folder holding one subdirectory per project."
       },
       {

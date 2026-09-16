@@ -41,7 +41,7 @@ from pathlib import Path
 LANES: tuple[str, ...] = ("focus", "active", "next", "paused")
 UNSORTED = "unsorted"
 DIRTY_LANES = frozenset({"focus", "active"})
-DEFAULT_ROOT = "~/data/_Github"
+DEFAULT_ROOT = "~/data/projects"
 GIT_TIMEOUT = 5
 HERDR_TIMEOUT = 20
 AGENT_RE = re.compile(r"[^a-z0-9_-]+")
