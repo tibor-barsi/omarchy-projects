@@ -98,7 +98,7 @@ BarWidget {
     if (!project.open) return "○"
     if (project.agentStatus === "blocked") return "▲"
     if (project.agentStatus === "working") return "●"
-    if (project.agentStatus === "unknown") return "◐"
+    if (project.agentStatus === "unknown") return "◔"
     return "◉"
   }
 
