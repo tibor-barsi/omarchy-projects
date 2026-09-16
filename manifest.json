@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.tibor-barsi.projects",
+  "name": "Projects",
+  "version": "0.1.0",
+  "author": "tibor-barsi",
+  "license": "MIT",
+  "description": "Prioritised project roster in the bar, with live Herdr workspace state and one-click open into a predefined layout.",
+  "kinds": ["bar-widget"],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Projects",
+    "description": "Your projects grouped into priority lanes, showing which are open in Herdr and which agents are working or blocked. Click one to open it.",
+    "category": "Info",
+    "aliases": ["projects", "roster"],
+    "allowMultiple": false,
+    "defaults": {
+      "projectsDir": "~/data/_Github",
+      "refreshIntervalSec": 120,
+      "defaultAgent": "none"
+    },
+    "schema": [
+      {
+        "key": "projectsDir",
+        "type": "path",
+        "label": "Projects folder",
+        "defaultValue": "~/data/_Github",
+        "description": "Folder holding one subdirectory per project."
+      },
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "Refresh interval (seconds)",
+        "min": 30,
+        "max": 3600,
+        "step": 30,
+        "defaultValue": 120
+      },
+      {
+        "key": "defaultAgent",
+        "type": "enum",
+        "label": "Default agent",
+        "options": ["none", "claude", "codex", "opencode", "gemini"],
+        "defaultValue": "none",
+        "description": "Agent started for projects with no .herdr/layout.toml. 'none' opens a plain shell."
+      }
+    ]
+  }
+}

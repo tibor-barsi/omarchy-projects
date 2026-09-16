@@ -1,0 +1,34 @@
+# Copy to <project>/.herdr/layout.toml to give a project a predefined layout.
+#
+# Layouts live in the project, not in the plugin, so they travel with the
+# repository to other machines and survive plugin updates.
+#
+# Each [[tabs]] entry becomes a Herdr tab. Its own `cmd` / `agent` runs in the
+# tab's first pane; each [[tabs.panes]] entry splits a new pane off the
+# previous one (or off the tab's first pane with `from = "root"`).
+#
+#   cwd        relative to the project directory, default "."
+#   agent      agent kind to start: claude, codex, opencode, gemini, ...
+#   cmd        shell command to run instead of an agent
+#   direction  "right" or "down"        (panes only)
+#   ratio      split fraction, 0 to 1   (panes only)
+#   from       "root" to split off the tab's first pane instead of the previous
+
+[[tabs]]
+label = "agent"
+cwd = "."
+agent = "claude"
+
+  [[tabs.panes]]
+  direction = "right"
+  ratio = 0.35
+  cmd = "git status"
+
+[[tabs]]
+label = "run"
+cwd = "codebase"
+
+[[tabs]]
+label = "notes"
+cwd = "."
+cmd = "nvim README.md"
