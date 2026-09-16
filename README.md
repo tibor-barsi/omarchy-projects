@@ -58,15 +58,25 @@ first, so new work is never silently missed.
 | Tag | For |
 |---|---|
 | Running | being worked on right now |
-| Waiting | blocked on someone or something outside your control |
+| Blocked | waiting on someone or something outside your control |
 | Next | queued up, starting soon |
 | Paused | deliberately parked |
 | Ideas | not started, someday |
-| Done | finished, kept for reference |
+| Ignore | directories you do not want to think about |
 
-Set a tag by **right-clicking** a project row, which moves it to the next box
-and wraps around through Unsorted. For anything bulkier — reordering within a
-box, renaming tags, notes — press `e` to open the state file, or use the CLI.
+Ignore is *muted* and *collapsed*: its projects are folded away behind their
+header and are left out of every count, so a tag meaning "stop showing me this"
+actually stops showing it. Muted boxes sort below even Unsorted. Click any box
+header to fold or unfold it.
+
+Three ways to set a tag, all doing the same thing:
+
+- **Right-click a row**, or click its 󰓹 button, to open an inline picker and
+  click the tag you want.
+- **Hover a row and press a number** — `1` for the first box through to the
+  last, `0` to clear the tag. The picker shows each box's number.
+- **Edit the state file** with `e` for anything bulkier: reordering within a
+  box, renaming tags, notes.
 
 State lives in `~/.local/state/omarchy-projects/state.json`, deliberately
 outside the plugin folder so `omarchy plugin update` cannot overwrite it:
@@ -77,11 +87,13 @@ outside the plugin folder so `omarchy plugin update` cannot overwrite it:
   "liveTag": "running",
   "tags": [
     { "name": "running", "label": "Running", "glyph": "󰐊" },
-    { "name": "waiting", "label": "Waiting", "glyph": "󰔟" }
+    { "name": "blocked", "label": "Blocked", "glyph": "󰜺" },
+    { "name": "ignore", "label": "Ignore", "glyph": "󰈉",
+      "collapsed": true, "muted": true }
   ],
   "projects": {
     "running": ["my-project", "my-project"],
-    "waiting": []
+    "blocked": []
   },
   "notes":  { "my-project": "finish the EMA release" },
   "hidden": ["_Archive"]
@@ -89,7 +101,8 @@ outside the plugin folder so `omarchy plugin update` cannot overwrite it:
 ```
 
 The `tags` array defines the boxes and their order, so the tag set can be
-renamed, reordered or extended without touching any code. Tag glyphs are Nerd
+renamed, reordered or extended without touching any code. `collapsed` starts a
+box folded; `muted` keeps its projects out of the counts and sorts it last. Tag glyphs are Nerd
 Font Material Design icons — if you add one in Python source, note they live
 above U+FFFF and need the 8-digit `\U000FXXXX` escape; the 4-digit `\u` form
 silently truncates and renders as garbage.
@@ -128,8 +141,8 @@ cwd = "codebase"
 Each `[[tabs]]` entry becomes a Herdr tab; its own `cmd` or `agent` runs in the
 tab's first pane. Each `[[tabs.panes]]` entry splits a new pane off the
 previous one, or off the tab's first pane with `from = "root"`. A pane-level
-failure is collected as a warning rather than aborting the layout, so a partial
-workspace still opens.
+failure is collected as a warning rather
+than aborting the layout, so a partial workspace still opens.
 
 Projects without a layout file get a single pane in the project root, running
 `defaultAgent` if one is configured.
@@ -141,7 +154,7 @@ The widget registers an IPC target, so the roster can be bound to a key:
 ```bash
 omarchy-shell projects toggle
 omarchy-shell projects open my-project
-omarchy-shell projects tag my-project waiting
+omarchy-shell projects tag my-project blocked
 omarchy-shell projects cycle my-project
 omarchy-shell projects reload
 ```
@@ -151,7 +164,7 @@ The backend is also usable on its own:
 ```bash
 python3 projects.py report --root ~/data/projects   # JSON roster
 python3 projects.py open my-project                     # focus or build
-python3 projects.py tag my-project waiting              # move to a box
+python3 projects.py tag my-project blocked              # move to a box
 python3 projects.py tag my-project -                    # untag
 python3 projects.py tags                           # list known tags
 python3 projects.py state                          # print the state file path
@@ -159,9 +172,16 @@ python3 projects.py state                          # print the state file path
 
 ## Known limitations
 
-- **IPC targets register only at shell start.** After editing this file, hot
-  reload picks up UI changes immediately, but a new or renamed IPC target needs
-  `omarchy restart shell`.
+- **IPC targets register only at shell start, and a hot reload leaves the old
+  instance holding them.** Editing the QML reloads the widget, but the previous
+  instance stays alive owning the IPC target, so `omarchy-shell projects ...`
+  keeps driving the stale copy — which still refreshes its data, and so looks
+  live while running old code. When a structural change does not appear, run
+  `omarchy restart shell` rather than trusting the reload.
+- **Nerd Font glyphs need 8-digit escapes in both languages.** These icons live
+  above U+FFFF, and `\u` takes exactly four hex digits in Python *and* in
+  QML/JavaScript, so `\uF0193` silently becomes U+F019 followed by `3`. Use
+  `\U000F0193` in Python and the literal character in QML.
 - **Raising the Herdr window is best effort.** It matches the terminal title
   against Herdr's default `window_title` of `{hostname}: {workspace}`. A
   customised title just means the window is not raised; the workspace switch

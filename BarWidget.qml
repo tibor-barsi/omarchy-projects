@@ -41,6 +41,12 @@ BarWidget {
   property string statePath: ""
   property string updatedAt: ""
   property string busyProject: ""
+  property string pickerFor: ""
+  property string hoveredProject: ""
+  // Box names the user has folded this session, seeded from each tag's
+  // `collapsed` flag the first time a report arrives.
+  property var collapsed: ({})
+  property bool collapseSeeded: false
 
   readonly property int openCount: Number(counts.open || 0)
   readonly property int blockedCount: Number(counts.blocked || 0)
@@ -83,6 +89,13 @@ BarWidget {
       root.counts = data.counts || ({})
       root.boxes = data.boxes || []
       root.liveTag = data.liveTag || ""
+      if (!root.collapseSeeded && root.boxes.length > 0) {
+        var seed = ({})
+        for (var i = 0; i < root.boxes.length; i++)
+          seed[root.boxes[i].name] = root.boxes[i].collapsed === true
+        root.collapsed = seed
+        root.collapseSeeded = true
+      }
       root.statePath = data.statePath || ""
       root.updatedAt = data.updated || ""
     } catch (e) {
@@ -133,6 +146,35 @@ BarWidget {
       root.scriptPath, name, root.projectsDir, root.defaultAgent]
     openProc.running = true
     root.popupOpen = false
+  }
+
+  function isCollapsed(box) {
+    return root.collapsed[box] === true
+  }
+
+  function toggleCollapsed(box) {
+    var next = ({})
+    for (var k in root.collapsed) next[k] = root.collapsed[k]
+    next[box] = !(next[box] === true)
+    root.collapsed = next
+  }
+
+  function openPicker(name) {
+    root.pickerFor = (root.pickerFor === name) ? "" : name
+  }
+
+  function clearTag(name) {
+    if (name === "") return
+    root.setTag(name, "-")
+    root.pickerFor = ""
+  }
+
+  // Number keys assign by position: 1 is the first box, 0 clears the tag.
+  function assignByIndex(name, index) {
+    if (name === "" || index < 0 || index >= root.boxes.length) return
+    var box = root.boxes[index].name
+    root.setTag(name, box === "unsorted" ? "-" : box)
+    root.pickerFor = ""
   }
 
   function tagOf(name) {
@@ -233,6 +275,7 @@ BarWidget {
     function open(name: string): void { root.openProject(name) }
     function tag(name: string, tag: string): void { root.setTag(name, tag) }
     function cycle(name: string): void { root.cycleTag(name, root.tagOf(name)) }
+    function pick(name: string): void { root.pickerFor = name; root.popupOpen = true }
   }
 
   WidgetButton {
@@ -266,6 +309,10 @@ BarWidget {
       onTextKey: function(t) {
         if (t === "r" || t === "R") root.refresh()
         else if (t === "e" || t === "E") root.editPriorities()
+        else if (t === "0" && root.hoveredProject !== "")
+          root.clearTag(root.hoveredProject)
+        else if (t >= "1" && t <= "9" && root.hoveredProject !== "")
+          root.assignByIndex(root.hoveredProject, parseInt(t) - 1)
       }
 
       Flickable {
@@ -366,18 +413,39 @@ BarWidget {
 
               PanelSeparator { foreground: root.bar.foreground }
 
-              PanelSectionHeader {
-                text: (modelData.glyph ? modelData.glyph + "  " : "")
-                  + modelData.label + "  (" + modelData.projects.length + ")"
-                foreground: root.bar.foreground
+              Item {
+                width: column.width
+                height: sectionHeader.implicitHeight
+
+                PanelSectionHeader {
+                  id: sectionHeader
+                  anchors.left: parent.left
+                  anchors.right: parent.right
+                  text: (modelData.glyph ? modelData.glyph + "  " : "")
+                    + modelData.label + "  (" + modelData.projects.length + ")"
+                    + (root.isCollapsed(modelData.name) ? "   󰅂" : "")
+                  foreground: root.bar.foreground
+                }
+
+                MouseArea {
+                  anchors.fill: parent
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: root.toggleCollapsed(modelData.name)
+                }
               }
 
               Repeater {
-                model: modelData.projects
+                model: root.isCollapsed(modelData.name) ? [] : modelData.projects
+
+                Column {
+                  id: rowItem
+                  required property var modelData
+                  width: column.width
+                  spacing: 0
 
                 Rectangle {
                   id: row
-                  required property var modelData
+                  readonly property var modelData: rowItem.modelData
                   width: column.width
                   height: nameText.implicitHeight + noteText.height + Style.space(10)
                   radius: Style.cornerRadius
@@ -436,16 +504,42 @@ BarWidget {
                       }
                     }
 
-                    Text {
-                      textFormat: Text.PlainText
-                      text: root.busyProject === row.modelData.name
-                        ? "…" : root.metaText(row.modelData)
-                      color: Qt.darker(root.bar.foreground, 1.7)
-                      font.family: root.bar.fontFamily
-                      font.pixelSize: Style.font.caption
-                      anchors.verticalCenter: parent.verticalCenter
+                    // At rest this column carries the derived facts; on hover
+                    // it becomes the actions, so rows stay narrow and quiet.
+                    Item {
                       width: Style.space(58)
-                      horizontalAlignment: Text.AlignRight
+                      height: Style.space(22)
+                      anchors.verticalCenter: parent.verticalCenter
+
+                      Text {
+                        anchors.fill: parent
+                        visible: !area.containsMouse || root.busyProject === row.modelData.name
+                        textFormat: Text.PlainText
+                        text: root.busyProject === row.modelData.name
+                          ? "…" : root.metaText(row.modelData)
+                        color: Qt.darker(root.bar.foreground, 1.7)
+                        font.family: root.bar.fontFamily
+                        font.pixelSize: Style.font.caption
+                        verticalAlignment: Text.AlignVCenter
+                        horizontalAlignment: Text.AlignRight
+                      }
+
+                      Row {
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: Style.space(2)
+                        visible: area.containsMouse && root.busyProject !== row.modelData.name
+
+                        PanelActionButton {
+                          iconText: "󰓹"
+                          size: Style.space(20)
+                          fontSize: Style.font.caption
+                          foreground: Qt.darker(root.bar.foreground, 1.4)
+                          hoverColor: root.bar.foreground
+                          tooltipText: "Change tag"
+                          onClicked: root.openPicker(row.modelData.name)
+                        }
+                      }
                     }
                   }
 
@@ -456,13 +550,73 @@ BarWidget {
                     cursorShape: Qt.PointingHandCursor
                     enabled: !row.modelData.missing
                     acceptedButtons: Qt.LeftButton | Qt.RightButton
+                    onEntered: root.hoveredProject = row.modelData.name
+                    onExited: if (root.hoveredProject === row.modelData.name)
+                      root.hoveredProject = ""
                     onClicked: function(mouse) {
                       if (mouse.button === Qt.RightButton)
-                        root.cycleTag(row.modelData.name, row.modelData.tag)
+                        root.openPicker(row.modelData.name)
                       else
                         root.openProject(row.modelData.name)
                     }
                   }
+                }
+
+                // Inline tag picker. Expanding in place rather than as a
+                // nested popup keeps it clear of the Flickable's clipping.
+                Item {
+                  width: column.width
+                  visible: root.pickerFor === rowItem.modelData.name
+                  height: visible ? picker.implicitHeight + Style.space(6) : 0
+
+                  Flow {
+                    id: picker
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.leftMargin: Style.space(20)
+                    anchors.top: parent.top
+                    spacing: Style.space(3)
+
+                    Repeater {
+                      model: root.boxes
+
+                      Rectangle {
+                        required property var modelData
+                        required property int index
+                        readonly property bool current:
+                          modelData.name === rowItem.modelData.tag
+                        height: chipText.implicitHeight + Style.space(5)
+                        width: chipText.implicitWidth + Style.space(10)
+                        radius: Style.cornerRadius
+                        color: current
+                          ? Style.selectedFillFor(root.bar.foreground, root.bar.foreground)
+                          : (chipArea.containsMouse
+                            ? Style.hoverFillFor(root.bar.foreground, root.bar.foreground)
+                            : "transparent")
+
+                        Text {
+                          id: chipText
+                          anchors.centerIn: parent
+                          textFormat: Text.PlainText
+                          text: (modelData.glyph ? modelData.glyph + " " : "")
+                            + modelData.label + "  " + (index + 1)
+                          color: parent.current
+                            ? root.bar.foreground : Qt.darker(root.bar.foreground, 1.5)
+                          font.family: root.bar.fontFamily
+                          font.pixelSize: Style.font.caption
+                        }
+
+                        MouseArea {
+                          id: chipArea
+                          anchors.fill: parent
+                          hoverEnabled: true
+                          cursorShape: Qt.PointingHandCursor
+                          onClicked: root.assignByIndex(rowItem.modelData.name, index)
+                        }
+                      }
+                    }
+                  }
+                }
                 }
               }
             }
@@ -475,7 +629,8 @@ BarWidget {
             textFormat: Text.PlainText
             width: parent.width
             wrapMode: Text.WordWrap
-            text: "Click opens in Herdr  ·  right-click cycles the tag  ·  e: edit file  ·  r: refresh"
+            text: "Click opens  ·  right-click tags  ·  1-9/0 tag the hovered row"
+              + "  ·  e: edit file  ·  r: refresh"
             color: Qt.darker(root.bar.foreground, 1.8)
             font.family: root.bar.fontFamily
             font.pixelSize: Style.font.caption

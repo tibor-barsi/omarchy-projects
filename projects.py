@@ -43,7 +43,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
-STATE_VERSION = 2
+STATE_VERSION = 3
 UNSORTED = "unsorted"
 UNSORTED_LABEL = "Unsorted"
 UNSORTED_GLYPH = "\U000F0765"
@@ -53,14 +53,22 @@ UNSORTED_GLYPH = "\U000F0765"
 # rather than code so the set can be renamed or extended in the state file.
 # Glyphs are Nerd Font Material Design icons, which live above U+FFFF and so
 # need the 8-digit \U escape; the 4-digit \u form silently truncates them.
+#
+# ``collapsed`` starts the box folded; ``muted`` keeps its projects out of the
+# attention counts, so a tag meaning "stop showing me this" actually stops
+# showing it.
 DEFAULT_TAGS: list[dict] = [
     {"name": "running", "label": "Running", "glyph": "\U000F040A"},
-    {"name": "waiting", "label": "Waiting", "glyph": "\U000F051F"},
+    {"name": "blocked", "label": "Blocked", "glyph": "\U000F073A"},
     {"name": "next", "label": "Next", "glyph": "\U000F0054"},
     {"name": "paused", "label": "Paused", "glyph": "\U000F03E4"},
     {"name": "idea", "label": "Ideas", "glyph": "\U000F0335"},
-    {"name": "done", "label": "Done", "glyph": "\U000F012C"},
+    {"name": "ignore", "label": "Ignore", "glyph": "\U000F0209",
+     "collapsed": True, "muted": True},
 ]
+
+# Renames applied to state files written before STATE_VERSION 3.
+V2_TAG_RENAMES = {"waiting": "blocked", "done": "ignore"}
 
 # The tag that claims a project is being worked on right now. Carrying it
 # without an open Herdr workspace is what marks a project stale.
@@ -152,8 +160,50 @@ def normalise_tags(raw: object) -> list[dict]:
                 "name": name,
                 "label": str(entry.get("label") or name.title()),
                 "glyph": str(entry.get("glyph") or ""),
+                "collapsed": bool(entry.get("collapsed", False)),
+                "muted": bool(entry.get("muted", False)),
             })
     return tags or [dict(tag) for tag in DEFAULT_TAGS]
+
+
+def migrate_tag_names(raw: dict, renames: dict[str, str]) -> dict:
+    """Rename tags in a state document, in both the definitions and the map.
+
+    Parameters
+    ----------
+    raw : dict
+        State document as read from disk.
+    renames : dict
+        Mapping of old tag name to new tag name.
+
+    Returns
+    -------
+    dict
+        A copy with tags renamed. Only applied to files written before the
+        rename landed, so a tag set the user has since customised is left
+        alone.
+    """
+    out = dict(raw)
+    tags = out.get("tags")
+    if isinstance(tags, list):
+        renamed = []
+        for tag in tags:
+            tag = dict(tag) if isinstance(tag, dict) else tag
+            if isinstance(tag, dict) and tag.get("name") in renames:
+                old = tag["name"]
+                tag["name"] = renames[old]
+                default = next(
+                    (t for t in DEFAULT_TAGS if t["name"] == renames[old]), None
+                )
+                if default:
+                    tag.update({k: v for k, v in default.items() if k != "name"})
+            renamed.append(tag)
+        out["tags"] = renamed
+
+    projects = out.get("projects")
+    if isinstance(projects, dict):
+        out["projects"] = {renames.get(k, k): v for k, v in projects.items()}
+    return out
 
 
 def load_state(path: Path) -> dict:
@@ -186,6 +236,9 @@ def load_state(path: Path) -> dict:
         return state
     if not isinstance(raw, dict):
         return state
+
+    if int(raw.get("version") or 1) < 3:
+        raw = migrate_tag_names(raw, V2_TAG_RENAMES)
 
     state["tags"] = normalise_tags(raw.get("tags"))
     names = {tag["name"] for tag in state["tags"]}
@@ -525,6 +578,7 @@ def build_report(root: Path, state: dict) -> dict:
     names = discover(root, state["hidden"])
     on_disk = set(names)
     live_tag = state["liveTag"]
+    muted_names = {tag["name"] for tag in state["tags"] if tag["muted"]}
 
     tagged: list[dict] = []
     seen: set[str] = set()
@@ -560,6 +614,7 @@ def build_report(root: Path, state: dict) -> dict:
         entry["stale"] = bool(
             live_tag and entry["tag"] == live_tag and not entry["open"] and not missing
         )
+        entry["muted"] = entry["tag"] in muted_names
 
         if missing:
             entry.update({"git": False, "ageDays": None, "dirty": None, "branch": ""})
@@ -582,32 +637,47 @@ def build_report(root: Path, state: dict) -> dict:
         age = entry["ageDays"]
         return (1, 0) if age is None else (0, age)
 
-    boxes = [
-        {
+    def box_for(tag: dict) -> dict:
+        return {
             "name": tag["name"],
             "label": tag["label"],
             "glyph": tag["glyph"],
+            "collapsed": tag["collapsed"],
+            "muted": tag["muted"],
             "projects": by_tag.get(tag["name"], []),
         }
-        for tag in state["tags"]
-    ]
-    boxes.append({
+
+    unsorted_box = {
         "name": UNSORTED,
         "label": UNSORTED_LABEL,
         "glyph": UNSORTED_GLYPH,
+        "collapsed": False,
+        "muted": False,
         "projects": sorted(by_tag.get(UNSORTED, []), key=age_key),
-    })
+    }
+
+    # Muted tags sort below even the untriaged catch-all: a box meaning "stop
+    # showing me this" belongs at the very bottom of the list.
+    boxes = [box_for(t) for t in state["tags"] if not t["muted"]]
+    boxes.append(unsorted_box)
+    boxes += [box_for(t) for t in state["tags"] if t["muted"]]
+
+    # A muted tag means "stop showing me this", so its projects are kept out of
+    # every count that exists to draw attention.
+    muted_tags = {tag["name"] for tag in state["tags"] if tag["muted"]}
+    loud = [e for e in entries if e["tag"] not in muted_tags]
 
     counts = {
         "total": len(entries),
-        "open": sum(1 for e in entries if e["open"]),
-        "working": sum(1 for e in entries if e["agentStatus"] == "working"),
-        "blocked": sum(1 for e in entries if e["agentStatus"] == "blocked"),
-        "dirty": sum(1 for e in entries if (e["dirty"] or 0) > 0),
-        "stale": sum(1 for e in entries if e["stale"]),
+        "open": sum(1 for e in loud if e["open"]),
+        "working": sum(1 for e in loud if e["agentStatus"] == "working"),
+        "blocked": sum(1 for e in loud if e["agentStatus"] == "blocked"),
+        "dirty": sum(1 for e in loud if (e["dirty"] or 0) > 0),
+        "stale": sum(1 for e in loud if e["stale"]),
         "tagged": len(tagged),
         "unsorted": len(by_tag.get(UNSORTED, [])),
-        "missing": sum(1 for e in entries if e["missing"]),
+        "muted": len(entries) - len(loud),
+        "missing": sum(1 for e in loud if e["missing"]),
     }
 
     return {
@@ -787,6 +857,7 @@ def _populate_tab(
         Shared agent-name counter.
     warnings : list of str
         Collects non-fatal failures.
+
     """
     _start_in_pane(tab_spec, root_pane, project, counter, warnings)
 
