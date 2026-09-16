@@ -6,13 +6,16 @@ import qs.Ui
 import qs.Commons
 
 // Project roster in the bar. The pill counts what is open and flags anything
-// blocked; the popup is the roster itself, grouped into priority lanes, and a
-// click opens the project — focusing its existing Herdr workspace when there
-// is one, otherwise building a fresh workspace from the project's layout.
+// blocked; the popup is the roster itself, one box per tag, and a left click
+// opens the project — focusing its existing Herdr workspace when there is one,
+// otherwise building a fresh workspace from the project's layout. A right
+// click cycles the project's tag, moving its line to the next box.
 //
-// Only the lanes are stored (in ~/.local/state/omarchy-projects/state.json);
+// Only the tags are stored (in ~/.local/state/omarchy-projects/state.json);
 // live state, git age and dirtiness are derived on every refresh by
 // projects.py, which never raises so failures land here as an error pill.
+// Boxes, their labels and their glyphs all come from that file, so the tag
+// set can change without touching this QML.
 BarWidget {
   id: root
   moduleName: "io.github.tibor-barsi.projects"
@@ -33,7 +36,8 @@ BarWidget {
   property string errorText: ""
   property string herdrError: ""
   property var counts: ({})
-  property var lanes: []
+  property var boxes: []
+  property string liveTag: ""
   property string statePath: ""
   property string updatedAt: ""
   property string busyProject: ""
@@ -41,6 +45,7 @@ BarWidget {
   readonly property int openCount: Number(counts.open || 0)
   readonly property int blockedCount: Number(counts.blocked || 0)
   readonly property int workingCount: Number(counts.working || 0)
+  readonly property int staleCount: Number(counts.stale || 0)
 
   readonly property string pillText: !everLoaded ? "󰉋 …"
     : !ok ? "󰉋 !"
@@ -52,6 +57,7 @@ BarWidget {
     var parts = [openCount + " open", workingCount + " working"]
     if (blockedCount > 0) parts.push(blockedCount + " blocked")
     if (Number(counts.dirty || 0) > 0) parts.push(counts.dirty + " dirty")
+    if (staleCount > 0) parts.push(staleCount + " stale")
     return "Projects — " + parts.join(" · ")
   }
 
@@ -75,22 +81,14 @@ BarWidget {
       root.errorText = data.error || ""
       root.herdrError = data.herdrError || ""
       root.counts = data.counts || ({})
-      root.lanes = data.lanes || []
+      root.boxes = data.boxes || []
+      root.liveTag = data.liveTag || ""
       root.statePath = data.statePath || ""
       root.updatedAt = data.updated || ""
     } catch (e) {
       root.ok = false
       root.errorText = "Bad response from projects.py"
     }
-  }
-
-  // Lane names are the storage keys; these are what the popup shows.
-  function laneTitle(name) {
-    if (name === "focus") return "Focus"
-    if (name === "active") return "Active"
-    if (name === "next") return "Next"
-    if (name === "paused") return "Paused"
-    return "Unsorted"
   }
 
   function statusGlyph(project) {
@@ -114,6 +112,9 @@ BarWidget {
   function metaText(project) {
     if (project.missing) return "missing"
     var bits = []
+    // Tagged as the live tag with nothing actually open in Herdr. Marked, not
+    // corrected — the tag is the user's statement of intent, not a cache.
+    if (project.stale) bits.push("⚠")
     if (project.dirty !== null && project.dirty !== undefined && project.dirty > 0)
       bits.push("±" + project.dirty)
     if (project.ageDays === null || project.ageDays === undefined) bits.push("no git")
@@ -132,6 +133,34 @@ BarWidget {
       root.scriptPath, name, root.projectsDir, root.defaultAgent]
     openProc.running = true
     root.popupOpen = false
+  }
+
+  function tagOf(name) {
+    for (var i = 0; i < root.boxes.length; i++) {
+      var items = root.boxes[i].projects
+      for (var j = 0; j < items.length; j++)
+        if (items[j].name === name) return root.boxes[i].name
+    }
+    return "unsorted"
+  }
+
+  // Right-clicking a row walks the tag list in the order the state file
+  // declares it, ending at unsorted before wrapping around.
+  function cycleTag(name, current) {
+    var order = []
+    for (var i = 0; i < root.boxes.length; i++) order.push(root.boxes[i].name)
+    if (order.length === 0) return
+    var idx = order.indexOf(current)
+    var next = order[(idx + 1) % order.length]
+    root.setTag(name, next === "unsorted" ? "-" : next)
+  }
+
+  function setTag(name, tag) {
+    if (tagProc.running) return
+    root.busyProject = name
+    tagProc.command = ["bash", "-lc",
+      "exec python3 \"$0\" tag \"$1\" \"$2\"", root.scriptPath, name, tag]
+    tagProc.running = true
   }
 
   function editPriorities() {
@@ -174,6 +203,15 @@ BarWidget {
     }
   }
 
+  Process {
+    id: tagProc
+    command: ["true"]
+    onExited: {
+      root.busyProject = ""
+      root.refresh()
+    }
+  }
+
   Timer {
     interval: Math.max(30000, root.refreshIntervalMs)
     running: true
@@ -193,6 +231,8 @@ BarWidget {
     function hide(): void { root.popupOpen = false }
     function reload(): void { root.refresh() }
     function open(name: string): void { root.openProject(name) }
+    function tag(name: string, tag: string): void { root.setTag(name, tag) }
+    function cycle(name: string): void { root.cycleTag(name, root.tagOf(name)) }
   }
 
   WidgetButton {
@@ -280,6 +320,7 @@ BarWidget {
                   var parts = [root.openCount + " open"]
                   if (root.workingCount > 0) parts.push(root.workingCount + " working")
                   if (root.blockedCount > 0) parts.push(root.blockedCount + " blocked")
+                  if (root.staleCount > 0) parts.push(root.staleCount + " stale")
                   if (root.updatedLabel !== "") parts.push(root.updatedLabel)
                   return parts.join(" · ")
                 }
@@ -313,9 +354,9 @@ BarWidget {
             font.pixelSize: Style.font.bodySmall
           }
 
-          // ---------- Lanes ----------
+          // ---------- Boxes, one per tag ----------
           Repeater {
-            model: root.lanes
+            model: root.boxes
 
             Column {
               required property var modelData
@@ -326,7 +367,8 @@ BarWidget {
               PanelSeparator { foreground: root.bar.foreground }
 
               PanelSectionHeader {
-                text: root.laneTitle(modelData.name) + "  (" + modelData.projects.length + ")"
+                text: (modelData.glyph ? modelData.glyph + "  " : "")
+                  + modelData.label + "  (" + modelData.projects.length + ")"
                 foreground: root.bar.foreground
               }
 
@@ -413,7 +455,13 @@ BarWidget {
                     hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
                     enabled: !row.modelData.missing
-                    onClicked: root.openProject(row.modelData.name)
+                    acceptedButtons: Qt.LeftButton | Qt.RightButton
+                    onClicked: function(mouse) {
+                      if (mouse.button === Qt.RightButton)
+                        root.cycleTag(row.modelData.name, row.modelData.tag)
+                      else
+                        root.openProject(row.modelData.name)
+                    }
                   }
                 }
               }
@@ -427,7 +475,7 @@ BarWidget {
             textFormat: Text.PlainText
             width: parent.width
             wrapMode: Text.WordWrap
-            text: "Click a project to open it in Herdr  ·  e: edit priorities  ·  r: refresh"
+            text: "Click opens in Herdr  ·  right-click cycles the tag  ·  e: edit file  ·  r: refresh"
             color: Qt.darker(root.bar.foreground, 1.8)
             font.family: root.bar.fontFamily
             font.pixelSize: Style.font.caption

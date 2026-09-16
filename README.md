@@ -1,23 +1,24 @@
 # Projects — an Omarchy bar widget
 
-A prioritised project roster in the Omarchy bar, wired to
+A tagged project roster in the Omarchy bar, wired to
 [Herdr](https://herdr.dev). The pill counts what is open and flags anything
-blocked; the popup is the roster, grouped into priority lanes. Click a project
-to open it — its existing Herdr workspace is focused if there is one, otherwise
-a fresh workspace is built from the project's layout file.
+blocked; the popup is the roster, one box per tag. Left-click a project to open
+it — its existing Herdr workspace is focused if there is one, otherwise a fresh
+workspace is built from the project's layout file. Right-click to move it to
+the next box.
 
 ## The idea
 
-Only one thing here is stored: **the priority lanes**. Everything else on
-screen is derived on every refresh, so a project you create tomorrow appears
-without being registered anywhere:
+Only one thing here is stored: **the tags**. Everything else on screen is
+derived on every refresh, so a project you create tomorrow appears without
+being registered anywhere:
 
 | Shown | Source |
 |---|---|
 | Open right now | `herdr workspace list` |
 | Agent working / blocked | `agent_status` from the same call |
 | Staleness | `git log -1` |
-| Uncommitted changes | `git status --porcelain` (focus and active lanes only) |
+| Uncommitted changes | `git status --porcelain` |
 | Exists at all | directory scan of the projects folder |
 
 ## Install
@@ -47,31 +48,59 @@ Configured through the Omarchy settings panel, or directly in
 | `refreshIntervalSec` | `120` | How often the roster refreshes |
 | `defaultAgent` | `none` | Agent started for projects with no layout file |
 
-## Priorities
+## Tags
 
-Lanes live in `~/.local/state/omarchy-projects/state.json` — deliberately
-outside the plugin folder, so `omarchy plugin update` cannot overwrite them.
+A project carries exactly one tag, which decides which box it sits in. Its
+position within that box is its priority — first in the list is the most
+important. Anything on disk without a tag lands in **Unsorted**, freshest
+first, so new work is never silently missed.
+
+| Tag | For |
+|---|---|
+| Running | being worked on right now |
+| Waiting | blocked on someone or something outside your control |
+| Next | queued up, starting soon |
+| Paused | deliberately parked |
+| Ideas | not started, someday |
+| Done | finished, kept for reference |
+
+Set a tag by **right-clicking** a project row, which moves it to the next box
+and wraps around through Unsorted. For anything bulkier — reordering within a
+box, renaming tags, notes — press `e` to open the state file, or use the CLI.
+
+State lives in `~/.local/state/omarchy-projects/state.json`, deliberately
+outside the plugin folder so `omarchy plugin update` cannot overwrite it:
 
 ```json
 {
-  "version": 1,
-  "lanes": {
-    "focus":  ["my-project"],
-    "active": ["my-project", "unified_calendar"],
-    "next":   [],
-    "paused": ["pysernal"]
+  "version": 2,
+  "liveTag": "running",
+  "tags": [
+    { "name": "running", "label": "Running", "glyph": "󰐊" },
+    { "name": "waiting", "label": "Waiting", "glyph": "󰔟" }
+  ],
+  "projects": {
+    "running": ["my-project", "my-project"],
+    "waiting": []
   },
   "notes":  { "my-project": "finish the EMA release" },
   "hidden": ["_Archive"]
 }
 ```
 
-Order within a lane is the order in the list. Anything on disk but not in a
-lane shows up under **Unsorted**, freshest first, so new work is never
-silently missed. Anything in a lane but no longer on disk is shown as
-`missing` rather than dropped, so a rename is visible.
+The `tags` array defines the boxes and their order, so the tag set can be
+renamed, reordered or extended without touching any code. Tag glyphs are Nerd
+Font Material Design icons — if you add one in Python source, note they live
+above U+FFFF and need the 8-digit `\U000FXXXX` escape; the 4-digit `\u` form
+silently truncates and renders as garbage.
 
-Press `e` in the popup to open the file in your editor, `r` to refresh.
+`liveTag` names the tag that claims a project is being worked on. Carrying it
+with no open Herdr workspace marks the row with `⚠` — tags are set by hand, so
+they drift, and the widget flags the drift rather than silently correcting it.
+Set `liveTag` to `""` to switch the marker off.
+
+Anything listed under a tag but no longer on disk shows as `missing` rather
+than being dropped, so a rename is visible instead of silent.
 
 ## Layouts
 
@@ -112,6 +141,8 @@ The widget registers an IPC target, so the roster can be bound to a key:
 ```bash
 omarchy-shell projects toggle
 omarchy-shell projects open my-project
+omarchy-shell projects tag my-project waiting
+omarchy-shell projects cycle my-project
 omarchy-shell projects reload
 ```
 
@@ -120,6 +151,9 @@ The backend is also usable on its own:
 ```bash
 python3 projects.py report --root ~/data/projects   # JSON roster
 python3 projects.py open my-project                     # focus or build
+python3 projects.py tag my-project waiting              # move to a box
+python3 projects.py tag my-project -                    # untag
+python3 projects.py tags                           # list known tags
 python3 projects.py state                          # print the state file path
 ```
 

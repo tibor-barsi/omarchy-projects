@@ -5,20 +5,25 @@ Two jobs live in this file.
 
 ``report`` (the default command)
     Merge three sources into one JSON document on stdout: the project
-    directories found on disk, the priority lanes recorded in the state file,
-    and live Herdr workspace state. Cheap git signals are folded in on top.
+    directories found on disk, the tags recorded in the state file, and live
+    Herdr workspace state. Cheap git signals are folded in on top.
 
 ``open <name>``
     Focus a project's Herdr workspace when one already exists, otherwise build
     a fresh one from the project's ``.herdr/layout.toml`` (or a default
     single-pane layout), then raise the Herdr terminal window.
 
+``tag <name> <tag>``
+    Move a project into one tag's box, or untag it with ``-``.
+
 The report path never raises. Every failure is reported as ``ok: false`` with
 an ``error`` string, so a broken backend degrades to an error pill in the bar
 instead of taking the shell down with it.
 
-Only the priority lanes are stored; everything else on screen is derived, so a
-project created tomorrow shows up without being registered anywhere.
+Only the tags are stored; everything else on screen is derived, so a project
+created tomorrow shows up without being registered anywhere. A project carries
+exactly one tag, which decides which box it sits in; its position within that
+box is its priority.
 """
 
 from __future__ import annotations
@@ -38,9 +43,34 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
-LANES: tuple[str, ...] = ("focus", "active", "next", "paused")
+STATE_VERSION = 2
 UNSORTED = "unsorted"
-DIRTY_LANES = frozenset({"focus", "active"})
+UNSORTED_LABEL = "Unsorted"
+UNSORTED_GLYPH = "\U000F0765"
+
+# The boxes in the popup, in order. A project carries exactly one tag, which
+# decides its box; its position within that box is its priority. Tags are data
+# rather than code so the set can be renamed or extended in the state file.
+# Glyphs are Nerd Font Material Design icons, which live above U+FFFF and so
+# need the 8-digit \U escape; the 4-digit \u form silently truncates them.
+DEFAULT_TAGS: list[dict] = [
+    {"name": "running", "label": "Running", "glyph": "\U000F040A"},
+    {"name": "waiting", "label": "Waiting", "glyph": "\U000F051F"},
+    {"name": "next", "label": "Next", "glyph": "\U000F0054"},
+    {"name": "paused", "label": "Paused", "glyph": "\U000F03E4"},
+    {"name": "idea", "label": "Ideas", "glyph": "\U000F0335"},
+    {"name": "done", "label": "Done", "glyph": "\U000F012C"},
+]
+
+# The tag that claims a project is being worked on right now. Carrying it
+# without an open Herdr workspace is what marks a project stale.
+DEFAULT_LIVE_TAG = "running"
+
+# Tags are set by hand, so they can drift from reality. v1 lanes map onto the
+# v2 tag set like this.
+V1_LANE_MAP = {"focus": "running", "active": "running",
+               "next": "next", "paused": "paused"}
+
 DEFAULT_ROOT = "~/data/projects"
 GIT_TIMEOUT = 5
 HERDR_TIMEOUT = 20
@@ -75,7 +105,7 @@ def state_path() -> Path:
 
 
 def default_state() -> dict:
-    """Return a fresh state document with every lane empty.
+    """Return a fresh state document with every tag empty.
 
     Returns
     -------
@@ -84,15 +114,50 @@ def default_state() -> dict:
         pen rather than a project.
     """
     return {
-        "version": 1,
-        "lanes": {lane: [] for lane in LANES},
+        "version": STATE_VERSION,
+        "liveTag": DEFAULT_LIVE_TAG,
+        "tags": [dict(tag) for tag in DEFAULT_TAGS],
+        "projects": {tag["name"]: [] for tag in DEFAULT_TAGS},
         "notes": {},
         "hidden": ["_Archive"],
     }
 
 
+def normalise_tags(raw: object) -> list[dict]:
+    """Coerce a stored tag list into well-formed tag definitions.
+
+    Parameters
+    ----------
+    raw : object
+        The ``tags`` value as found in the state file.
+
+    Returns
+    -------
+    list of dict
+        Tags carrying ``name``, ``label`` and ``glyph``, in file order and
+        without duplicates. Falls back to the defaults when nothing usable is
+        present, so a mangled tag list cannot empty the popup.
+    """
+    tags: list[dict] = []
+    seen: set[str] = set()
+    if isinstance(raw, list):
+        for entry in raw:
+            if not isinstance(entry, dict):
+                continue
+            name = str(entry.get("name") or "").strip()
+            if not name or name == UNSORTED or name in seen:
+                continue
+            seen.add(name)
+            tags.append({
+                "name": name,
+                "label": str(entry.get("label") or name.title()),
+                "glyph": str(entry.get("glyph") or ""),
+            })
+    return tags or [dict(tag) for tag in DEFAULT_TAGS]
+
+
 def load_state(path: Path) -> dict:
-    """Read and normalise the priority state file.
+    """Read and normalise the tag state file.
 
     Parameters
     ----------
@@ -102,10 +167,17 @@ def load_state(path: Path) -> dict:
     Returns
     -------
     dict
-        A state document guaranteed to carry every lane key, a ``notes``
-        mapping and a ``hidden`` list. A missing or malformed file yields the
-        default state rather than an error: priorities are a convenience, and
-        losing them must never block opening a project.
+        A state document carrying ``tags``, a ``projects`` mapping of tag name
+        to an ordered list of project names, ``notes``, ``hidden`` and
+        ``liveTag``. A missing or malformed file yields the default state
+        rather than an error: tags are a convenience, and losing them must
+        never block opening a project.
+
+    Notes
+    -----
+    Version 1 files stored priority ``lanes`` instead of tags. They are
+    migrated in memory on read through :data:`V1_LANE_MAP`; the file is only
+    rewritten when something actually writes to it.
     """
     state = default_state()
     try:
@@ -115,12 +187,33 @@ def load_state(path: Path) -> dict:
     if not isinstance(raw, dict):
         return state
 
-    lanes = raw.get("lanes")
-    if isinstance(lanes, dict):
-        for lane in LANES:
-            values = lanes.get(lane)
-            if isinstance(values, list):
-                state["lanes"][lane] = [v for v in values if isinstance(v, str)]
+    state["tags"] = normalise_tags(raw.get("tags"))
+    names = {tag["name"] for tag in state["tags"]}
+    state["projects"] = {name: [] for name in names}
+
+    stored = raw.get("projects")
+    if not isinstance(stored, dict) and isinstance(raw.get("lanes"), dict):
+        # v1: fold the old priority lanes onto the tag set.
+        stored = {}
+        for lane, values in raw["lanes"].items():
+            target = V1_LANE_MAP.get(lane)
+            if target and isinstance(values, list):
+                stored.setdefault(target, []).extend(values)
+
+    if isinstance(stored, dict):
+        placed: set[str] = set()
+        for name in state["projects"]:
+            values = stored.get(name)
+            if not isinstance(values, list):
+                continue
+            for value in values:
+                # One tag per project: the first tag that claims a name wins.
+                if isinstance(value, str) and value and value not in placed:
+                    placed.add(value)
+                    state["projects"][name].append(value)
+
+    live = str(raw.get("liveTag") or DEFAULT_LIVE_TAG)
+    state["liveTag"] = live if live in names else ""
 
     notes = raw.get("notes")
     if isinstance(notes, dict):
@@ -132,7 +225,53 @@ def load_state(path: Path) -> dict:
     if isinstance(hidden, list):
         state["hidden"] = [v for v in hidden if isinstance(v, str)]
 
+    state["version"] = STATE_VERSION
     return state
+
+
+def set_tag(state: dict, project: str, tag: str) -> bool:
+    """Move a project into one tag, or untag it entirely.
+
+    Parameters
+    ----------
+    state : dict
+        State document, modified in place.
+    project : str
+        Project name.
+    tag : str
+        Target tag name, or ``"-"`` / ``""`` / ``"unsorted"`` to untag.
+
+    Returns
+    -------
+    bool
+        Whether the state changed.
+
+    Raises
+    ------
+    ValueError
+        When ``tag`` names a tag that does not exist.
+
+    Notes
+    -----
+    A project is removed from every list before being appended to the target,
+    which is what keeps the one-tag-per-project rule true no matter what the
+    file looked like beforehand. It lands at the end of its new box, the
+    lowest priority there, since arriving somewhere says nothing about how
+    urgent it is.
+    """
+    clearing = tag in ("-", "", UNSORTED)
+    names = {t["name"] for t in state["tags"]}
+    if not clearing and tag not in names:
+        raise ValueError(f"unknown tag {tag!r}; known: {', '.join(sorted(names))}")
+
+    before = {name: list(values) for name, values in state["projects"].items()}
+    for name in state["projects"]:
+        state["projects"][name] = [
+            v for v in state["projects"][name] if v != project
+        ]
+    if not clearing:
+        state["projects"].setdefault(tag, []).append(project)
+    return state["projects"] != before
 
 
 def write_state(path: Path, state: dict) -> None:
@@ -207,17 +346,13 @@ def _git(path: Path, *args: str) -> str | None:
     return proc.stdout.strip()
 
 
-def git_info(path: Path, want_dirty: bool) -> dict:
+def git_info(path: Path) -> dict:
     """Collect cheap git signals for one project.
 
     Parameters
     ----------
     path : pathlib.Path
         Project directory.
-    want_dirty : bool
-        Whether to run ``git status``. Reserved for the lanes actually being
-        worked on, since a status call over dozens of repositories on every
-        bar refresh is wasteful.
 
     Returns
     -------
@@ -239,10 +374,9 @@ def git_info(path: Path, want_dirty: bool) -> dict:
     if branch:
         info["branch"] = branch
 
-    if want_dirty:
-        status = _git(path, "status", "--porcelain")
-        if status is not None:
-            info["dirty"] = len([line for line in status.splitlines() if line.strip()])
+    status = _git(path, "status", "--porcelain")
+    if status is not None:
+        info["dirty"] = len([line for line in status.splitlines() if line.strip()])
 
     return info
 
@@ -370,14 +504,16 @@ def build_report(root: Path, state: dict) -> dict:
     root : pathlib.Path
         Directory holding the projects.
     state : dict
-        Priority state document.
+        Tag state document.
 
     Returns
     -------
     dict
-        Report with ``lanes``, ``counts`` and metadata. Herdr being down is
-        reported in ``herdrError`` and leaves the rest of the report intact,
-        so the project list still works without a running session.
+        Report with ``boxes``, ``counts`` and metadata. One box per tag in the
+        state file's order, plus a trailing ``unsorted`` box for anything on
+        disk that carries no tag. Herdr being down is reported in
+        ``herdrError`` and leaves the rest of the report intact, so the roster
+        still works without a running session.
     """
     herdr_error = ""
     workspaces: dict[str, dict] = {}
@@ -388,24 +524,20 @@ def build_report(root: Path, state: dict) -> dict:
 
     names = discover(root, state["hidden"])
     on_disk = set(names)
+    live_tag = state["liveTag"]
 
-    lane_of: dict[str, str] = {}
-    ordered: dict[str, list[str]] = {lane: [] for lane in LANES}
-    for lane in LANES:
-        for name in state["lanes"][lane]:
-            if name in lane_of:
+    tagged: list[dict] = []
+    seen: set[str] = set()
+    for tag in state["tags"]:
+        for name in state["projects"].get(tag["name"], []):
+            if name in seen:
                 continue
-            lane_of[name] = lane
-            ordered[lane].append(name)
+            seen.add(name)
+            tagged.append({"name": name, "tag": tag["name"]})
 
-    unsorted = [name for name in names if name not in lane_of]
-
-    entries: list[dict] = []
-    for lane in LANES:
-        for name in ordered[lane]:
-            entries.append({"name": name, "lane": lane})
-    for name in unsorted:
-        entries.append({"name": name, "lane": UNSORTED})
+    entries = tagged + [
+        {"name": name, "tag": UNSORTED} for name in names if name not in seen
+    ]
 
     def hydrate(entry: dict) -> dict:
         name = entry["name"]
@@ -422,27 +554,49 @@ def build_report(root: Path, state: dict) -> dict:
         entry["agentStatus"] = str(workspace.get("agent_status") or "") if workspace else ""
         entry["focused"] = bool(workspace.get("focused")) if workspace else False
 
+        # Tags are set by hand, so they drift. A project claiming to be the
+        # live tag with nothing actually open is the drift worth surfacing;
+        # the widget marks it rather than silently correcting it.
+        entry["stale"] = bool(
+            live_tag and entry["tag"] == live_tag and not entry["open"] and not missing
+        )
+
         if missing:
             entry.update({"git": False, "ageDays": None, "dirty": None, "branch": ""})
         else:
-            entry.update(git_info(path, entry["lane"] in DIRTY_LANES))
+            entry.update(git_info(path))
         return entry
 
     if entries:
-        with ThreadPoolExecutor(max_workers=8) as pool:
+        with ThreadPoolExecutor(max_workers=12) as pool:
             entries = list(pool.map(hydrate, entries))
 
+    by_tag: dict[str, list[dict]] = {}
+    for entry in entries:
+        by_tag.setdefault(entry["tag"], []).append(entry)
+
     # Freshest first is the only ordering that means anything for projects
-    # nobody has triaged yet.
+    # nobody has tagged yet. Tagged boxes keep file order, which is the
+    # priority the user set.
     def age_key(entry: dict) -> tuple[int, int]:
         age = entry["ageDays"]
         return (1, 0) if age is None else (0, age)
 
-    unsorted_entries = sorted(
-        (e for e in entries if e["lane"] == UNSORTED), key=age_key
-    )
-    by_lane = {lane: [e for e in entries if e["lane"] == lane] for lane in LANES}
-    by_lane[UNSORTED] = unsorted_entries
+    boxes = [
+        {
+            "name": tag["name"],
+            "label": tag["label"],
+            "glyph": tag["glyph"],
+            "projects": by_tag.get(tag["name"], []),
+        }
+        for tag in state["tags"]
+    ]
+    boxes.append({
+        "name": UNSORTED,
+        "label": UNSORTED_LABEL,
+        "glyph": UNSORTED_GLYPH,
+        "projects": sorted(by_tag.get(UNSORTED, []), key=age_key),
+    })
 
     counts = {
         "total": len(entries),
@@ -450,8 +604,9 @@ def build_report(root: Path, state: dict) -> dict:
         "working": sum(1 for e in entries if e["agentStatus"] == "working"),
         "blocked": sum(1 for e in entries if e["agentStatus"] == "blocked"),
         "dirty": sum(1 for e in entries if (e["dirty"] or 0) > 0),
-        "focus": len(by_lane["focus"]),
-        "unsorted": len(unsorted_entries),
+        "stale": sum(1 for e in entries if e["stale"]),
+        "tagged": len(tagged),
+        "unsorted": len(by_tag.get(UNSORTED, [])),
         "missing": sum(1 for e in entries if e["missing"]),
     }
 
@@ -462,11 +617,9 @@ def build_report(root: Path, state: dict) -> dict:
         "updated": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "root": str(root),
         "statePath": str(state_path()),
+        "liveTag": live_tag,
         "counts": counts,
-        "lanes": [
-            {"name": lane, "projects": by_lane[lane]}
-            for lane in (*LANES, UNSORTED)
-        ],
+        "boxes": boxes,
     }
 
 
@@ -858,8 +1011,9 @@ def main(argv: list[str] | None = None) -> int:
     """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", nargs="?", default="report",
-                        choices=["report", "open", "init", "state"])
+                        choices=["report", "open", "tag", "tags", "init", "state"])
     parser.add_argument("name", nargs="?", default="")
+    parser.add_argument("value", nargs="?", default="")
     parser.add_argument("--root", default=DEFAULT_ROOT)
     parser.add_argument("--default-agent", default="")
     args = parser.parse_args(argv)
@@ -875,6 +1029,30 @@ def main(argv: list[str] | None = None) -> int:
         if not path.exists():
             write_state(path, default_state())
         print(path)
+        return 0
+
+    if args.command == "tags":
+        state = load_state(path)
+        for tag in state["tags"]:
+            marker = " (live)" if tag["name"] == state["liveTag"] else ""
+            print(f"{tag['name']}{marker}")
+        print(UNSORTED)
+        return 0
+
+    if args.command == "tag":
+        if not args.name:
+            print(json.dumps({"ok": False, "error": "no project given"}))
+            return 2
+        state = load_state(path)
+        try:
+            changed = set_tag(state, args.name, args.value)
+        except ValueError as exc:
+            print(json.dumps({"ok": False, "error": str(exc)}))
+            return 2
+        if changed:
+            write_state(path, state)
+        print(json.dumps({"ok": True, "error": "", "changed": changed,
+                          "project": args.name, "tag": args.value or UNSORTED}))
         return 0
 
     if args.command == "open":
@@ -895,7 +1073,7 @@ def main(argv: list[str] | None = None) -> int:
             "error": f"{type(exc).__name__}: {exc}",
             "herdrError": "",
             "counts": {},
-            "lanes": [],
+            "boxes": [],
         }
     print(json.dumps(report))
     return 0
