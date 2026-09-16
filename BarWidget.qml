@@ -177,6 +177,15 @@ BarWidget {
     root.pickerFor = ""
   }
 
+  function captureLayout(name) {
+    if (captureProc.running) return
+    root.busyProject = name
+    captureProc.command = ["bash", "-lc",
+      "exec python3 \"$0\" capture \"$1\" --root \"$2\"",
+      root.scriptPath, name, root.projectsDir]
+    captureProc.running = true
+  }
+
   function tagOf(name) {
     for (var i = 0; i < root.boxes.length; i++) {
       var items = root.boxes[i].projects
@@ -246,6 +255,15 @@ BarWidget {
   }
 
   Process {
+    id: captureProc
+    command: ["true"]
+    onExited: {
+      root.busyProject = ""
+      root.refresh()
+    }
+  }
+
+  Process {
     id: tagProc
     command: ["true"]
     onExited: {
@@ -275,6 +293,7 @@ BarWidget {
     function open(name: string): void { root.openProject(name) }
     function tag(name: string, tag: string): void { root.setTag(name, tag) }
     function cycle(name: string): void { root.cycleTag(name, root.tagOf(name)) }
+    function capture(name: string): void { root.captureLayout(name) }
     function pick(name: string): void { root.pickerFor = name; root.popupOpen = true }
   }
 
@@ -531,6 +550,17 @@ BarWidget {
                         visible: area.containsMouse && root.busyProject !== row.modelData.name
 
                         PanelActionButton {
+                          iconText: "󰆓"
+                          size: Style.space(20)
+                          fontSize: Style.font.caption
+                          visible: row.modelData.open === true
+                          foreground: Qt.darker(root.bar.foreground, 1.4)
+                          hoverColor: root.bar.foreground
+                          tooltipText: "Save this workspace as the layout"
+                          onClicked: root.captureLayout(row.modelData.name)
+                        }
+
+                        PanelActionButton {
                           iconText: "󰓹"
                           size: Style.space(20)
                           fontSize: Style.font.caption
@@ -630,7 +660,7 @@ BarWidget {
             width: parent.width
             wrapMode: Text.WordWrap
             text: "Click opens  ·  right-click tags  ·  1-9/0 tag the hovered row"
-              + "  ·  e: edit file  ·  r: refresh"
+              + "  ·  󰆓 saves the live layout  ·  e: edit file  ·  r: refresh"
             color: Qt.darker(root.bar.foreground, 1.8)
             font.family: root.bar.fontFamily
             font.pixelSize: Style.font.caption

@@ -16,6 +16,10 @@ Two jobs live in this file.
 ``tag <name> <tag>``
     Move a project into one tag's box, or untag it with ``-``.
 
+``capture <name>``
+    Write the project's live Herdr workspace out as its ``.herdr/layout.toml``,
+    so a layout arranged by hand becomes the one it reopens with.
+
 The report path never raises. Every failure is reported as ``ok: false`` with
 an ``error`` string, so a broken backend degrades to an error pill in the bar
 instead of taking the shell down with it.
@@ -858,14 +862,22 @@ def _populate_tab(
     warnings : list of str
         Collects non-fatal failures.
 
+    Notes
+    -----
+    A pane entry splits off the previous pane by default. ``from`` overrides
+    that with ``"root"`` or with any earlier pane's ``name``, which is what
+    lets an arbitrary split tree be written down as a flat list — and so what
+    lets ``capture`` round-trip a layout built by hand in Herdr.
     """
     _start_in_pane(tab_spec, root_pane, project, counter, warnings)
 
+    named: dict[str, str] = {"root": root_pane}
     current = root_pane
     for pane in tab_spec.get("panes") or []:
         if not isinstance(pane, dict):
             continue
-        base = root_pane if str(pane.get("from") or "").lower() == "root" else current
+        source = str(pane.get("from") or "").strip()
+        base = named.get(source, current) if source else current
         if not base:
             continue
         direction = str(pane.get("direction") or "right").lower()
@@ -887,6 +899,9 @@ def _populate_tab(
             warnings.append(f"split {direction}: {exc}")
             continue
         current = str((result.get("pane") or {}).get("pane_id") or "")
+        label = str(pane.get("name") or "").strip()
+        if label:
+            named[label] = current
         _start_in_pane(pane, current, project, counter, warnings)
 
 
@@ -953,6 +968,335 @@ def apply_layout(project: str, target: Path, spec: dict, warnings: list[str]) ->
         _populate_tab(target, tab, pane_id, project, counter, warnings)
 
     return workspace_id
+
+
+# --------------------------------------------------------------------------
+# Capturing a live layout
+# --------------------------------------------------------------------------
+
+SHELL_NAMES = frozenset({"bash", "zsh", "fish", "sh", "dash", "nu"})
+
+
+def _split_children(split: dict, nodes: list[tuple]) -> tuple:
+    """Find the two nodes a split divides its area between.
+
+    Parameters
+    ----------
+    split : dict
+        A split from Herdr's ``pane layout``, carrying ``direction`` and
+        ``rect``.
+    nodes : list of tuple
+        ``(key, rect)`` for every pane and split in the same tab.
+
+    Returns
+    -------
+    tuple
+        The ``(first, second)`` child keys, either of which may be ``None``.
+
+    Notes
+    -----
+    Herdr reports splits and panes as a flat list with absolute rectangles
+    rather than as a tree, so the tree is recovered geometrically. A deeper
+    descendant can share an edge with its ancestor, so among the candidates
+    along the dividing edge the largest is the immediate child.
+    """
+    rect = split["rect"]
+    horizontal = split["direction"] == "right"
+    span, extent = ("height", "width") if horizontal else ("width", "height")
+    axis = "x" if horizontal else "y"
+    other = "y" if horizontal else "x"
+
+    def pick(at: int, keep_span: bool = True) -> tuple | None:
+        best = None
+        for key, r in nodes:
+            if r is rect:
+                continue
+            if r[axis] != at or r[other] != rect[other]:
+                continue
+            if keep_span and r[span] != rect[span]:
+                continue
+            if r[extent] >= rect[extent]:
+                continue
+            if best is None or r[extent] > best[1][extent]:
+                best = (key, r)
+        return best
+
+    first = pick(rect[axis])
+    if first is None:
+        return None, None
+    second = pick(rect[axis] + first[1][extent])
+    return first[0], (second[0] if second else None)
+
+
+def _linearise(
+    key: tuple,
+    anchor: str,
+    splits: dict,
+    nodes: list[tuple],
+    ops: list[dict],
+    placement: dict,
+    counter: list[int],
+) -> None:
+    """Walk a split tree into the flat pane list the layout format uses.
+
+    Parameters
+    ----------
+    key : tuple
+        ``("pane", id)`` or ``("split", id)`` node being emitted.
+    anchor : str
+        Name of the pane currently occupying this node's whole area.
+    splits : dict
+        Split objects by key.
+    nodes : list of tuple
+        ``(key, rect)`` for every node in the tab.
+    ops : list of dict
+        Collects the emitted pane entries, in application order.
+    placement : dict
+        Filled in with ``pane_id -> name``.
+    counter : list of int
+        Single-element counter used to name generated panes.
+
+    Notes
+    -----
+    Splitting a pane leaves it holding the first half and puts the new pane in
+    the second, so the anchor recurses into the first child and the new name
+    into the second. Pre-order keeps every ``from`` referring to a pane that
+    already exists by the time its entry is applied.
+    """
+    if key[0] == "pane":
+        placement[key[1]] = anchor
+        return
+
+    split = splits[key]
+    first, second = _split_children(split, nodes)
+    counter[0] += 1
+    name = f"p{counter[0]}"
+    ops.append({
+        "name": name,
+        "from": anchor,
+        "direction": split["direction"],
+        "ratio": round(float(split.get("ratio") or 0.5), 3),
+    })
+    if first is not None:
+        _linearise(first, anchor, splits, nodes, ops, placement, counter)
+    if second is not None:
+        _linearise(second, name, splits, nodes, ops, placement, counter)
+
+
+def _pane_command(pane_id: str, agents: dict[str, str]) -> dict:
+    """Describe what a pane is running, for the captured layout.
+
+    Parameters
+    ----------
+    pane_id : str
+        Pane to inspect.
+    agents : dict
+        Mapping of pane id to agent kind.
+
+    Returns
+    -------
+    dict
+        ``{"agent": kind}``, ``{"cmd": cmdline}``, or an empty dict for a pane
+        sitting at a bare shell prompt.
+    """
+    if pane_id in agents:
+        return {"agent": agents[pane_id]}
+    try:
+        info = herdr_call(["pane", "process-info", "--pane", pane_id])
+    except HerdrError:
+        return {}
+    process_info = info.get("process_info") or {}
+    shell_pid = process_info.get("shell_pid")
+    for process in process_info.get("foreground_processes") or []:
+        if process.get("pid") == shell_pid or process.get("name") in SHELL_NAMES:
+            continue
+        cmdline = str(process.get("cmdline") or "").strip()
+        if cmdline:
+            return {"cmd": cmdline}
+    return {}
+
+
+def _relative_cwd(target: Path, raw: str) -> str:
+    """Express a pane's working directory relative to the project.
+
+    Parameters
+    ----------
+    target : pathlib.Path
+        Project directory.
+    raw : str
+        Absolute path reported by Herdr.
+
+    Returns
+    -------
+    str
+        A path relative to the project, or the absolute path when the pane
+        sits outside it. Relative is what makes a captured layout portable to
+        another machine.
+    """
+    if not raw:
+        return "."
+    try:
+        return str(Path(raw).resolve().relative_to(target.resolve())) or "."
+    except ValueError:
+        return raw
+
+
+def capture_layout(root: Path, project: str) -> dict:
+    """Write a project's live Herdr workspace out as its layout file.
+
+    Parameters
+    ----------
+    root : pathlib.Path
+        Directory holding the projects.
+    project : str
+        Project name, matched against Herdr workspace labels.
+
+    Returns
+    -------
+    dict
+        Result document with ``ok``, ``error``, ``path``, ``tabs`` and
+        ``panes``.
+    """
+    target = root / project
+    if not target.is_dir():
+        return {"ok": False, "error": f"{target} is not a directory"}
+
+    try:
+        workspace = herdr_workspaces().get(project)
+        if not workspace:
+            return {"ok": False,
+                    "error": f"no open Herdr workspace labelled {project!r}"}
+        workspace_id = str(workspace.get("workspace_id"))
+        tabs_result = herdr_call(["tab", "list", "--workspace", workspace_id])
+        panes_result = herdr_call(["pane", "list", "--workspace", workspace_id])
+        agents = {
+            str(a.get("pane_id")): str(a.get("agent") or "")
+            for a in (herdr_call(["agent", "list"]).get("agents") or [])
+            if a.get("pane_id") and a.get("agent")
+        }
+    except HerdrError as exc:
+        return {"ok": False, "error": str(exc)}
+
+    panes_by_tab: dict[str, list[dict]] = {}
+    for pane in panes_result.get("panes") or []:
+        panes_by_tab.setdefault(str(pane.get("tab_id")), []).append(pane)
+
+    tabs: list[dict] = []
+    pane_total = 0
+    for tab in tabs_result.get("tabs") or []:
+        tab_id = str(tab.get("tab_id"))
+        members = panes_by_tab.get(tab_id) or []
+        if not members:
+            continue
+        try:
+            layout = herdr_call(
+                ["pane", "layout", "--pane", str(members[0]["pane_id"])]
+            ).get("layout") or {}
+        except HerdrError as exc:
+            return {"ok": False, "error": str(exc)}
+
+        splits = {("split", s["id"]): s for s in layout.get("splits") or []}
+        nodes: list[tuple] = [
+            (("pane", p["pane_id"]), p["rect"]) for p in layout.get("panes") or []
+        ]
+        nodes += [(key, s["rect"]) for key, s in splits.items()]
+
+        area = layout.get("area") or {}
+        root_key = next(
+            (key for key, rect in nodes if rect == area),
+            nodes[0][0] if nodes else None,
+        )
+        if root_key is None:
+            continue
+
+        ops: list[dict] = []
+        placement: dict[str, str] = {}
+        _linearise(root_key, "root", splits, nodes, ops, placement, [0])
+
+        cwd_of = {str(p["pane_id"]): str(p.get("cwd") or "") for p in members}
+        entry: dict = {"panes": []}
+        # Herdr numbers unnamed tabs, and capturing "1" as a label is noise.
+        label = str(tab.get("label") or "").strip()
+        if label and not label.isdigit():
+            entry["label"] = label
+
+        for pane_id, name in placement.items():
+            spec = {"cwd": _relative_cwd(target, cwd_of.get(pane_id, ""))}
+            spec.update(_pane_command(pane_id, agents))
+            if name == "root":
+                entry.update(spec)
+            else:
+                for op in ops:
+                    if op["name"] == name:
+                        op.update(spec)
+                        break
+
+        entry["panes"] = ops
+        entry.setdefault("cwd", ".")
+        tabs.append(entry)
+        pane_total += len(members)
+
+    if not tabs:
+        return {"ok": False, "error": "workspace has no panes to capture"}
+
+    path = target / ".herdr" / "layout.toml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        backup = path.with_suffix(".toml.bak")
+        backup.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
+    path.write_text(render_layout_toml(project, tabs), encoding="utf-8")
+
+    return {"ok": True, "error": "", "path": str(path),
+            "tabs": len(tabs), "panes": pane_total}
+
+
+def _toml_value(value: object) -> str:
+    """Render one scalar as TOML."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    escaped = str(value).replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def render_layout_toml(project: str, tabs: list[dict]) -> str:
+    """Render captured tabs as a layout file.
+
+    Parameters
+    ----------
+    project : str
+        Project name, used in the header comment.
+    tabs : list of dict
+        Tab specifications.
+
+    Returns
+    -------
+    str
+        TOML text. Hand-written by design: the layout format is small, and a
+        dependency-free plugin is worth more than a general serialiser.
+    """
+    stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+    lines = [
+        f"# Herdr layout for {project}, captured {stamp}.",
+        "# Regenerate by arranging the workspace and capturing it again;",
+        "# the previous version is kept alongside as layout.toml.bak.",
+        "",
+    ]
+    order = ("label", "cwd", "agent", "cmd")
+    for tab in tabs:
+        lines.append("[[tabs]]")
+        for key in order:
+            if tab.get(key):
+                lines.append(f"{key} = {_toml_value(tab[key])}")
+        for pane in tab.get("panes") or []:
+            lines.append("")
+            lines.append("  [[tabs.panes]]")
+            for key in ("name", "from", "direction", "ratio", "cwd", "agent", "cmd"):
+                if pane.get(key) not in (None, ""):
+                    lines.append(f"  {key} = {_toml_value(pane[key])}")
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
 
 
 # --------------------------------------------------------------------------
@@ -1082,7 +1426,8 @@ def main(argv: list[str] | None = None) -> int:
     """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", nargs="?", default="report",
-                        choices=["report", "open", "tag", "tags", "init", "state"])
+                        choices=["report", "open", "tag", "tags", "capture", "init",
+                                 "state"])
     parser.add_argument("name", nargs="?", default="")
     parser.add_argument("value", nargs="?", default="")
     parser.add_argument("--root", default=DEFAULT_ROOT)
@@ -1125,6 +1470,14 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"ok": True, "error": "", "changed": changed,
                           "project": args.name, "tag": args.value or UNSORTED}))
         return 0
+
+    if args.command == "capture":
+        if not args.name:
+            print(json.dumps({"ok": False, "error": "no project given"}))
+            return 2
+        result = capture_layout(root, args.name)
+        print(json.dumps(result))
+        return 0 if result["ok"] else 1
 
     if args.command == "open":
         if not args.name:

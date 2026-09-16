@@ -117,6 +117,29 @@ than being dropped, so a rename is visible instead of silent.
 
 ## Layouts
 
+### Capturing one
+
+The quickest way to get a layout is to stop writing one. Arrange the workspace
+in Herdr however you want it — split the panes, open the tabs, start the agent
+— then open the roster and click the 󰆓 button on that project's row. The live
+workspace is written out as its `.herdr/layout.toml`, and that is what it
+reopens with from then on. Any previous layout is kept alongside as
+`layout.toml.bak`.
+
+The same thing from a script:
+
+```bash
+omarchy-shell projects capture my-project
+python3 projects.py capture my-project
+```
+
+Capture reads the split tree out of Herdr, including each split's direction and
+ratio, the working directory of every pane, and whatever each pane is running —
+an agent by kind, or the foreground command. A pane sitting at a bare shell
+prompt is recorded as just a pane.
+
+### Writing one by hand
+
 Give a project a predefined Herdr layout by adding `.herdr/layout.toml` to it.
 Layouts live in the project rather than in this plugin, so they travel with the
 repository to other machines and survive plugin updates. See
@@ -140,8 +163,10 @@ cwd = "codebase"
 
 Each `[[tabs]]` entry becomes a Herdr tab; its own `cmd` or `agent` runs in the
 tab's first pane. Each `[[tabs.panes]]` entry splits a new pane off the
-previous one, or off the tab's first pane with `from = "root"`. A pane-level
-failure is collected as a warning rather
+previous one, off the tab's first pane with `from = "root"`, or off any earlier
+pane that gave itself a `name`. That last form is what lets an arbitrary split
+tree be written as a flat list, and so what lets a captured layout reproduce
+the workspace exactly. A pane-level failure is collected as a warning rather
 than aborting the layout, so a partial workspace still opens.
 
 Projects without a layout file get a single pane in the project root, running
@@ -156,6 +181,7 @@ omarchy-shell projects toggle
 omarchy-shell projects open my-project
 omarchy-shell projects tag my-project blocked
 omarchy-shell projects cycle my-project
+omarchy-shell projects capture my-project
 omarchy-shell projects reload
 ```
 
@@ -165,6 +191,7 @@ The backend is also usable on its own:
 python3 projects.py report --root ~/data/projects   # JSON roster
 python3 projects.py open my-project                     # focus or build
 python3 projects.py tag my-project blocked              # move to a box
+python3 projects.py capture my-project                  # live workspace -> layout
 python3 projects.py tag my-project -                    # untag
 python3 projects.py tags                           # list known tags
 python3 projects.py state                          # print the state file path
