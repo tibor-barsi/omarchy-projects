@@ -176,9 +176,13 @@ python3 projects.py capture my-project
 
 Capture reads the split tree out of Herdr, including each split's direction and
 ratio, the working directory of every pane, and whatever each pane is running.
-An agent is recorded by kind (`agent = "claude"`), and any other foreground
-program by its command line (`cmd = "lazygit"`), so a pane running lazygit,
-btop or an editor comes back on the next open. A pane sitting at a bare shell
+An agent is recorded by kind together with the flags it was started with
+(`agent = "claude"`, `args = ["--dangerously-skip-permissions"]`), and any
+other foreground program by its command line (`cmd = "lazygit"`), so a pane
+running lazygit, btop or an editor comes back on the next open. Arguments are
+read from the running process, so a shell alias is captured as the command it
+expands to — which is what has to be replayed, since the agent is started
+directly and never sees your alias. A pane sitting at a bare shell
 prompt is recorded as just a pane. It is a snapshot of that moment: a command
 that has already exited is not recorded, because nothing is running in it.
 
@@ -194,6 +198,7 @@ repository to other machines and survive plugin updates. See
 label = "agent"
 cwd = "."
 agent = "claude"
+args = ["--dangerously-skip-permissions"]   # optional, passed to the agent
 
   [[tabs.panes]]
   direction = "right"

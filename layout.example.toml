@@ -9,6 +9,7 @@
 #
 #   cwd        relative to the project directory, default "."
 #   agent      agent kind to start: claude, codex, opencode, gemini, ...
+#   args       arguments passed to that agent, e.g. ["--resume"]
 #   cmd        shell command to run instead of an agent
 #   direction  "right" or "down"        (panes only)
 #   ratio      split fraction, 0 to 1   (panes only)
@@ -18,6 +19,7 @@
 label = "agent"
 cwd = "."
 agent = "claude"
+args = ["--dangerously-skip-permissions"]
 
   [[tabs.panes]]
   direction = "right"

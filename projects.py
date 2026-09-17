@@ -520,7 +520,10 @@ def herdr_call(
 
     error = payload.get("error")
     if error:
-        raise HerdrError(str(error)[:200])
+        # Herdr reports failures as {"code": ..., "message": ...}; surface the
+        # message rather than the whole object, which ends up in warnings.
+        detail = error.get("message") or error.get("code") if isinstance(error, dict) else error
+        raise HerdrError(str(detail or error)[:200])
     if proc.returncode != 0:
         raise HerdrError(f"herdr {' '.join(args)} exited {proc.returncode}")
 
@@ -830,11 +833,14 @@ def _start_in_pane(
     if kind:
         name = agent_name(project, counter[0])
         counter[0] += 1
+        raw = spec.get("args")
+        args = [str(a) for a in raw if str(a)] if isinstance(raw, list) else []
+        command = ["agent", "start", name, "--kind", kind, "--pane", pane_id]
+        if args:
+            # Herdr passes everything after `--` through to the agent itself.
+            command += ["--", *args]
         try:
-            herdr_call(
-                ["agent", "start", name, "--kind", kind, "--pane", pane_id],
-                timeout=45,
-            )
+            herdr_call(command, timeout=45)
         except HerdrError as exc:
             warnings.append(f"agent {kind} in {pane_id}: {exc}")
         return
@@ -1111,24 +1117,39 @@ def _pane_command(pane_id: str, agents: dict[str, str]) -> dict:
     Returns
     -------
     dict
-        ``{"agent": kind}``, ``{"cmd": cmdline}``, or an empty dict for a pane
-        sitting at a bare shell prompt.
+        ``{"agent": kind}`` with an optional ``args`` list, ``{"cmd": cmdline}``,
+        or an empty dict for a pane sitting at a bare shell prompt.
+
+    Notes
+    -----
+    An agent's kind says nothing about how it was invoked. Recording only the
+    kind silently drops the flags it was started with, so the arguments are
+    read from the live process and replayed too. They are taken from the
+    process itself rather than from what was typed, so a shell alias is
+    captured as the command it expands to — which is what has to be run, since
+    the agent is started directly and never sees the alias.
     """
-    if pane_id in agents:
-        return {"agent": agents[pane_id]}
     try:
         info = herdr_call(["pane", "process-info", "--pane", pane_id])
     except HerdrError:
-        return {}
+        return {"agent": agents[pane_id]} if pane_id in agents else {}
     process_info = info.get("process_info") or {}
     shell_pid = process_info.get("shell_pid")
+
     for process in process_info.get("foreground_processes") or []:
         if process.get("pid") == shell_pid or process.get("name") in SHELL_NAMES:
             continue
+        if pane_id in agents:
+            argv = [str(a) for a in (process.get("argv") or [])]
+            spec: dict = {"agent": agents[pane_id]}
+            if len(argv) > 1:
+                spec["args"] = argv[1:]
+            return spec
         cmdline = str(process.get("cmdline") or "").strip()
         if cmdline:
             return {"cmd": cmdline}
-    return {}
+
+    return {"agent": agents[pane_id]} if pane_id in agents else {}
 
 
 def _relative_cwd(target: Path, raw: str) -> str:
@@ -1270,7 +1291,9 @@ def capture_layout(root: Path, project: str, as_default: bool = False) -> dict:
 
 
 def _toml_value(value: object) -> str:
-    """Render one scalar as TOML."""
+    """Render one scalar or list as TOML."""
+    if isinstance(value, list):
+        return "[" + ", ".join(_toml_value(v) for v in value) + "]"
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, (int, float)):
@@ -1302,7 +1325,7 @@ def render_layout_toml(project: str, tabs: list[dict]) -> str:
         "# the previous version is kept alongside as *.toml.bak.",
         "",
     ]
-    order = ("label", "cwd", "agent", "cmd")
+    order = ("label", "cwd", "agent", "args", "cmd")
     for tab in tabs:
         lines.append("[[tabs]]")
         for key in order:
@@ -1311,7 +1334,8 @@ def render_layout_toml(project: str, tabs: list[dict]) -> str:
         for pane in tab.get("panes") or []:
             lines.append("")
             lines.append("  [[tabs.panes]]")
-            for key in ("name", "from", "direction", "ratio", "cwd", "agent", "cmd"):
+            for key in ("name", "from", "direction", "ratio", "cwd",
+                        "agent", "args", "cmd"):
                 if pane.get(key) not in (None, ""):
                     lines.append(f"  {key} = {_toml_value(pane[key])}")
         lines.append("")
