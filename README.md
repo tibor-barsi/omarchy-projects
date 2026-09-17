@@ -54,6 +54,7 @@ With the roster open, everything works without the mouse:
 |---|---|
 | `↑` `↓` / `k` `j` | move the selection |
 | `←` `→` / `h` `l` | jump to the previous or next box |
+| `K` `J` | raise or lower the selected project's priority |
 | `Enter` | open the selected project in Herdr |
 | `t` | open the tag picker for the selected row |
 | `1`–`9` | set the tag by box number |
@@ -83,6 +84,13 @@ position within that box is its priority — first in the list is the most
 important. Anything on disk without a tag lands in **Unsorted**, freshest
 first, so new work is never silently missed.
 
+Priority is the only ordering there is, and it is always on: boxes render in
+the order they are stored, with no sort setting to choose. Raise or lower the
+selected project with `K` and `J` — capitals, since lowercase `k` and `j` move
+the selection rather than the project. Unsorted does not reorder, because that
+box is derived freshest-first and would discard a hand-made order on the next
+refresh; give a project a tag first.
+
 | Tag | For |
 |---|---|
 | Running | being worked on right now |
@@ -103,8 +111,8 @@ Three ways to set a tag, all doing the same thing:
   click the tag you want.
 - **Hover a row and press a number** — `1` for the first box through to the
   last, `0` to clear the tag. The picker shows each box's number.
-- **Edit the state file** with `e` for anything bulkier: reordering within a
-  box, renaming tags, notes.
+- **Edit the state file** with `e` for anything bulkier: renaming tags, notes,
+  or reshuffling a whole box at once.
 
 State lives in `~/.local/state/omarchy-projects/state.json`, deliberately
 outside the plugin folder so `omarchy plugin update` cannot overwrite it:
@@ -230,6 +238,7 @@ omarchy-shell projects toggle
 omarchy-shell projects open my-project
 omarchy-shell projects tag my-project blocked
 omarchy-shell projects cycle my-project
+omarchy-shell projects move my-project up
 omarchy-shell projects capture my-project
 omarchy-shell projects reload
 ```
@@ -240,6 +249,7 @@ The backend is also usable on its own:
 python3 projects.py report --root ~/data/projects   # JSON roster
 python3 projects.py open my-project                     # focus or build
 python3 projects.py tag my-project blocked              # move to a box
+python3 projects.py move my-project up                  # up | down | top | bottom
 python3 projects.py capture my-project                  # live workspace -> layout
 python3 projects.py tag my-project -                    # untag
 python3 projects.py tags                           # list known tags

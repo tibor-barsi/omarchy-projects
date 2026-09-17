@@ -292,6 +292,20 @@ BarWidget {
     root.setTag(name, next === "unsorted" ? "-" : next)
   }
 
+  // Position inside a box is priority, so reordering is the whole of it --
+  // there is no separate priority field to drift out of step with the list.
+  // Untagged rows are skipped: Unsorted is derived freshest-first and would
+  // discard a hand-made order on the next refresh.
+  function moveProject(name, direction) {
+    if (name === "" || moveProc.running) return
+    if (root.tagOf(name) === "unsorted") return
+    root.busyProject = name
+    moveProc.command = ["bash", "-lc",
+      "exec python3 \"$0\" move \"$1\" \"$2\"",
+      root.scriptPath, name, direction]
+    moveProc.running = true
+  }
+
   function setTag(name, tag) {
     if (tagProc.running) return
     root.busyProject = name
@@ -358,6 +372,15 @@ BarWidget {
     }
   }
 
+  Process {
+    id: moveProc
+    command: ["true"]
+    onExited: {
+      root.busyProject = ""
+      root.refresh()
+    }
+  }
+
   Timer {
     interval: Math.max(30000, root.refreshIntervalMs)
     running: true
@@ -380,6 +403,7 @@ BarWidget {
     function tag(name: string, tag: string): void { root.setTag(name, tag) }
     function cycle(name: string): void { root.cycleTag(name, root.tagOf(name)) }
     function capture(name: string): void { root.captureLayout(name) }
+    function move(name: string, direction: string): void { root.moveProject(name, direction) }
     function pick(name: string): void { root.pickerFor = name; root.popupOpen = true }
   }
 
@@ -428,7 +452,9 @@ BarWidget {
           if (root.targetRow() !== "") root.openPicker(root.targetRow())
         } else if (t === "c" || t === "C") {
           if (root.targetRow() !== "") root.captureLayout(root.targetRow())
-        } else if (t === "0") root.clearTag(root.targetRow())
+        } else if (t === "K") root.moveProject(root.targetRow(), "up")
+        else if (t === "J") root.moveProject(root.targetRow(), "down")
+        else if (t === "0") root.clearTag(root.targetRow())
         else if (t >= "1" && t <= "9")
           root.assignByIndex(root.targetRow(), parseInt(t) - 1)
       }

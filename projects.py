@@ -121,33 +121,6 @@ def default_layout_path() -> Path:
     return state_path().parent / "default-layout.toml"
 
 
-AGENT_RE = re.compile(r"[^a-z0-9_-]+")
-
-
-class HerdrError(RuntimeError):
-    """Raised when the Herdr CLI cannot be reached or refuses a command."""
-
-
-class LayoutError(RuntimeError):
-    """Raised when a project's layout file cannot be read or understood."""
-
-
-# --------------------------------------------------------------------------
-# State
-# --------------------------------------------------------------------------
-
-def default_layout_path() -> Path:
-    """Return the path of the fallback layout shared by every project.
-
-    Returns
-    -------
-    pathlib.Path
-        ``default-layout.toml`` beside the state file, so it survives plugin
-        updates the same way the tags do.
-    """
-    return state_path().parent / "default-layout.toml"
-
-
 def state_path() -> Path:
     """Return the path of the priority state file.
 
@@ -331,6 +304,62 @@ def load_state(path: Path) -> dict:
 
     state["version"] = STATE_VERSION
     return state
+
+
+def reorder(state: dict, project: str, direction: str) -> bool:
+    """Move a project up or down inside its tag, changing its priority.
+
+    Parameters
+    ----------
+    state : dict
+        State document, modified in place.
+    project : str
+        Project name.
+    direction : {'up', 'down', 'top', 'bottom'}
+        Which way to move it. ``up`` raises its priority by one place.
+
+    Returns
+    -------
+    bool
+        Whether the state changed. Moving an untagged project, or one already
+        at the end it is being sent to, is a no-op rather than an error.
+
+    Raises
+    ------
+    ValueError
+        When ``direction`` is not one of the four accepted words.
+
+    Notes
+    -----
+    Position within a tag *is* priority, so there is nothing else to store and
+    no separate ordering to keep in step. Untagged projects are excluded: the
+    Unsorted box is derived freshest-first, and hand-ordering a list that is
+    recomputed on every refresh would not survive the next one.
+    """
+    if direction not in ("up", "down", "top", "bottom"):
+        raise ValueError(
+            f"unknown direction {direction!r}; use up, down, top or bottom"
+        )
+
+    for values in state["projects"].values():
+        if project not in values:
+            continue
+        index = values.index(project)
+        if direction == "up":
+            target = index - 1
+        elif direction == "down":
+            target = index + 1
+        elif direction == "top":
+            target = 0
+        else:
+            target = len(values) - 1
+        target = max(0, min(target, len(values) - 1))
+        if target == index:
+            return False
+        values.insert(target, values.pop(index))
+        return True
+
+    return False
 
 
 def set_tag(state: dict, project: str, tag: str) -> bool:
@@ -1551,7 +1580,8 @@ def main(argv: list[str] | None = None) -> int:
     """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", nargs="?", default="report",
-                        choices=["report", "open", "tag", "tags", "capture", "init",
+                        choices=["report", "open", "tag", "move", "tags",
+                                 "capture", "init",
                                  "state"])
     parser.add_argument("name", nargs="?", default="")
     parser.add_argument("value", nargs="?", default="")
@@ -1596,6 +1626,23 @@ def main(argv: list[str] | None = None) -> int:
             write_state(path, state)
         print(json.dumps({"ok": True, "error": "", "changed": changed,
                           "project": args.name, "tag": args.value or UNSORTED}))
+        return 0
+
+    if args.command == "move":
+        if not args.name:
+            print(json.dumps({"ok": False, "error": "no project given"}))
+            return 2
+        state = load_state(path)
+        try:
+            changed = reorder(state, args.name, args.value or "up")
+        except ValueError as exc:
+            print(json.dumps({"ok": False, "error": str(exc)}))
+            return 2
+        if changed:
+            write_state(path, state)
+        print(json.dumps({"ok": True, "error": "", "changed": changed,
+                          "project": args.name,
+                          "direction": args.value or "up"}))
         return 0
 
     if args.command == "capture":
