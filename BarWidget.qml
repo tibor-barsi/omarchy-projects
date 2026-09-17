@@ -178,6 +178,7 @@ BarWidget {
     root.searching = false
     searchField.text = ""
     root.revealBoxOf(found)
+    revealSelected.restart()
     keyCatcher.forceActiveFocus()
   }
 
@@ -254,6 +255,19 @@ BarWidget {
 
   // Rows sit inside nested Columns, so their own y says nothing about where
   // they are in the scrolled content; map into the content column instead.
+  // Leaving search keeps the same project selected but rebuilds every row
+  // around it, so nothing re-scrolls: the row is still selected and now sits
+  // wherever the full list puts it, which is usually off-screen. Rows register
+  // themselves as they are created, and this runs once that has happened --
+  // immediately is too early, the new rows have no position yet.
+  property var selectedItem: null
+
+  Timer {
+    id: revealSelected
+    interval: 50
+    onTriggered: root.ensureVisible(root.selectedItem)
+  }
+
   function ensureVisible(item) {
     if (!item || !flick.visible) return
     var pos = item.mapToItem(column, 0, 0)
@@ -757,7 +771,12 @@ BarWidget {
                   readonly property var modelData: rowItem.modelData
                   readonly property bool selected:
                     root.selectedName === rowItem.modelData.name
-                  onSelectedChanged: if (selected) root.ensureVisible(rowItem)
+                  onSelectedChanged: {
+                    if (!selected) return
+                    root.selectedItem = rowItem
+                    root.ensureVisible(rowItem)
+                  }
+                  Component.onCompleted: if (selected) root.selectedItem = rowItem
                   width: column.width
                   height: nameText.implicitHeight + noteText.height + Style.space(10)
                   radius: Style.cornerRadius
