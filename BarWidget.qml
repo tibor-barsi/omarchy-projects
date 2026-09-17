@@ -268,15 +268,33 @@ BarWidget {
     onTriggered: root.ensureVisible(root.selectedItem)
   }
 
+  // Scrolls `item` into view with a margin, so a row never lands flush against
+  // an edge with no room for what opens under it. Everything is measured
+  // rather than assumed: the popup's height varies with the screen, and the
+  // picker is a Flow whose height depends on how its chips wrap at that width,
+  // so any constant would be wrong at some size.
   function ensureVisible(item) {
-    if (!item || !flick.visible) return
+    if (!item || !flick.visible || flick.height <= 0) return
     var pos = item.mapToItem(column, 0, 0)
-    if (pos.y < flick.contentY)
-      flick.contentY = Math.max(0, pos.y)
-    else if (pos.y + item.height > flick.contentY + flick.height)
-      flick.contentY = Math.min(
-        Math.max(0, flick.contentHeight - flick.height),
-        pos.y + item.height - flick.height)
+    if (!pos) return
+
+    var margin = Style.space(8)
+    var maxY = Math.max(0, flick.contentHeight - flick.height)
+    var top = pos.y - margin
+    var bottom = pos.y + item.height + margin
+
+    // Taller than the viewport -- a row with its picker open on a short
+    // screen. Pin the top: the row and as much of the picker as fits beats
+    // aligning the bottom, which would push the row itself off the top.
+    if (bottom - top >= flick.height) {
+      flick.contentY = Math.min(maxY, Math.max(0, top))
+      return
+    }
+
+    if (top < flick.contentY)
+      flick.contentY = Math.max(0, top)
+    else if (bottom > flick.contentY + flick.height)
+      flick.contentY = Math.min(maxY, bottom - flick.height)
   }
 
   function refresh() {
@@ -765,6 +783,13 @@ BarWidget {
                   required property var modelData
                   width: column.width
                   spacing: 0
+
+                  // The picker expands inside this Column, so this height is
+                  // the measurement that matters. Following it also re-runs
+                  // if the Flow settles over more than one frame.
+                  onHeightChanged:
+                    if (root.pickerFor === rowItem.modelData.name)
+                      root.ensureVisible(rowItem)
 
                 Rectangle {
                   id: row
