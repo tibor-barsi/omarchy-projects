@@ -89,13 +89,120 @@ BarWidget {
   function close() {
     popupOpen = false
     pickerFor = ""
+    if (searching) exitSearch()
+  }
+
+  // Search is a mode, not a key: every letter is already a command, so `/`
+  // is what frees the alphabet for typing. The query lives in the field so
+  // backspace, selection and IME behave like any other input in the shell.
+  property bool searching: false
+  readonly property string query: root.searching ? searchField.text : ""
+
+  function matchesQuery(project) {
+    var q = root.query.toLowerCase()
+    if (q === "") return true
+    if (String(project.name).toLowerCase().indexOf(q) >= 0) return true
+    return String(project.note || "").toLowerCase().indexOf(q) >= 0
+  }
+
+  // What the roster draws and the keyboard walks. Lookups deliberately keep
+  // reading `boxes`: box numbers address tags, not visible rows, and tagOf on
+  // a filtered-out project would report "unsorted" and then mis-tag it.
+  readonly property var shownBoxes: {
+    if (root.query === "") return root.boxes
+    var out = []
+    for (var i = 0; i < root.boxes.length; i++) {
+      var box = root.boxes[i]
+      var kept = []
+      for (var j = 0; j < box.projects.length; j++)
+        if (root.matchesQuery(box.projects[j])) kept.push(box.projects[j])
+      if (kept.length === 0) continue
+      var copy = ({})
+      for (var k in box) copy[k] = box[k]
+      copy.projects = kept
+      out.push(copy)
+    }
+    return out
+  }
+
+  readonly property int matchCount: {
+    var n = 0
+    for (var i = 0; i < root.shownBoxes.length; i++)
+      n += root.shownBoxes[i].projects.length
+    return n
+  }
+
+  // Keep the cursor on something real as the list narrows under it. Deferred
+  // by one pass: read straight from the change handler and visibleRows is
+  // still the pre-filter list, so the cursor lands on a row that the query
+  // has just hidden and nothing looks selected at all.
+  onQueryChanged: if (root.query !== "") selectionSync.restart()
+
+  Timer {
+    id: selectionSync
+    interval: 0
+    onTriggered: {
+      if (root.visibleRows.indexOf(root.selectedName) < 0)
+        root.selectedName = root.visibleRows.length > 0 ? root.visibleRows[0] : ""
+    }
+  }
+
+  function startSearch() {
+    root.pickerFor = ""
+    root.searching = true
+    searchFocus.restart()
+  }
+
+  // Text set from outside waits for this pass too: assigning it before the
+  // panel has opened filters a roster the field does not yet have focus on,
+  // and the cursor ends up on whatever the unfiltered list started with.
+  property string pendingQuery: ""
+
+  Timer {
+    id: searchFocus
+    interval: 0
+    onTriggered: {
+      if (!root.searching) return
+      searchField.forceActiveFocus()
+      if (root.pendingQuery !== "") {
+        searchField.text = root.pendingQuery
+        root.pendingQuery = ""
+      }
+    }
+  }
+
+  // The selection is held by name, so it survives the filter clearing -- which
+  // is how a search reaches the commands the mode locked out: /vibro Esc K.
+  function exitSearch() {
+    var found = root.selectedName
+    root.searching = false
+    searchField.text = ""
+    root.revealBoxOf(found)
+    keyCatcher.forceActiveFocus()
+  }
+
+  // Search sees into folded boxes, so leaving it can strand the selection on a
+  // row that just went back into hiding. Unfold the box that holds it instead:
+  // finding something in Ignore and losing it again on Escape is the one thing
+  // a search must not do.
+  function revealBoxOf(name) {
+    if (name === "") return
+    for (var i = 0; i < root.boxes.length; i++) {
+      var items = root.boxes[i].projects
+      for (var j = 0; j < items.length; j++) {
+        if (items[j].name !== name) continue
+        if (root.collapsed[root.boxes[i].name] === true)
+          root.toggleCollapsed(root.boxes[i].name)
+        return
+      }
+    }
   }
 
   // Every row the user can currently move to, in the order they are drawn.
   readonly property var visibleRows: {
     var out = []
-    for (var i = 0; i < root.boxes.length; i++) {
-      var box = root.boxes[i]
+    for (var i = 0; i < root.shownBoxes.length; i++) {
+      var box = root.shownBoxes[i]
       if (root.isCollapsed(box.name)) continue
       var items = box.projects
       for (var j = 0; j < items.length; j++) out.push(items[j].name)
@@ -125,8 +232,8 @@ BarWidget {
     if (n === 0) return
     var starts = []
     var seen = 0
-    for (var i = 0; i < root.boxes.length; i++) {
-      var box = root.boxes[i]
+    for (var i = 0; i < root.shownBoxes.length; i++) {
+      var box = root.shownBoxes[i]
       if (root.isCollapsed(box.name) || box.projects.length === 0) continue
       starts.push(seen)
       seen += box.projects.length
@@ -235,6 +342,7 @@ BarWidget {
   }
 
   function isCollapsed(box) {
+    if (root.query !== "") return false
     return root.collapsed[box] === true
   }
 
@@ -404,6 +512,11 @@ BarWidget {
     function cycle(name: string): void { root.cycleTag(name, root.tagOf(name)) }
     function capture(name: string): void { root.captureLayout(name) }
     function move(name: string, direction: string): void { root.moveProject(name, direction) }
+    function search(text: string): void {
+      root.popupOpen = true
+      root.pendingQuery = text
+      root.startSearch()
+    }
     function pick(name: string): void { root.pickerFor = name; root.popupOpen = true }
   }
 
@@ -428,15 +541,19 @@ BarWidget {
     bar: root.bar
     owner: root
     open: root.popupOpen
-    focusTarget: keyCatcher
+    focusTarget: root.searching ? searchField : keyCatcher
     contentWidth: popup.fittedContentWidth(Style.space(400))
     contentHeight: popup.fittedContentHeight(flick.implicitHeight, Style.space(560))
 
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
+      // The kit's rule for inline editors: while one owns the keys, freeze
+      // the panel's cursor model instead of racing it for every letter.
+      blocked: searchField.activeFocus
       onCloseRequested: {
         if (root.pickerFor !== "") root.pickerFor = ""
+        else if (root.searching) root.exitSearch()
         else root.close()
       }
       onMoveRequested: function(dx, dy) {
@@ -446,7 +563,8 @@ BarWidget {
       onReturnRequested: root.activateSelected()
       onDeleteRequested: root.clearTag(root.targetRow())
       onTextKey: function(t) {
-        if (t === "r" || t === "R") root.refresh()
+        if (t === "/") root.startSearch()
+        else if (t === "r" || t === "R") root.refresh()
         else if (t === "e" || t === "E") root.editPriorities()
         else if (t === "t" || t === "T") {
           if (root.targetRow() !== "") root.openPicker(root.targetRow())
@@ -533,6 +651,52 @@ BarWidget {
             }
           }
 
+          // ---------- Search ----------
+          Row {
+            width: parent.width
+            spacing: Style.space(8)
+            visible: root.searching
+
+            TextField {
+              id: searchField
+              width: parent.width - Style.space(76)
+              foreground: root.bar.foreground
+              verticalPadding: Style.space(3)
+              placeholderText: "Search name or note"
+              anchors.verticalCenter: parent.verticalCenter
+
+              onAccepted: {
+                var target = root.selectedName
+                root.exitSearch()
+                if (target !== "") root.openProject(target)
+              }
+
+              // Arrows walk the matches: j and k are ordinary text in here.
+              Keys.onPressed: function(event) {
+                if (event.key === Qt.Key_Escape) {
+                  root.exitSearch(); event.accepted = true
+                } else if (event.key === Qt.Key_Down) {
+                  root.moveSelection(1); event.accepted = true
+                } else if (event.key === Qt.Key_Up) {
+                  root.moveSelection(-1); event.accepted = true
+                }
+              }
+            }
+
+            Text {
+              textFormat: Text.PlainText
+              text: root.query === "" ? ""
+                : root.matchCount + (root.matchCount === 1 ? " match" : " matches")
+              color: root.matchCount === 0 ? root.bar.urgent
+                : Qt.darker(root.bar.foreground, 1.5)
+              font.family: root.bar.fontFamily
+              font.pixelSize: Style.font.caption
+              anchors.verticalCenter: parent.verticalCenter
+              width: Style.space(68)
+              horizontalAlignment: Text.AlignRight
+            }
+          }
+
           Text {
             textFormat: Text.PlainText
             visible: !root.ok || root.herdrError !== ""
@@ -548,7 +712,7 @@ BarWidget {
 
           // ---------- Boxes, one per tag ----------
           Repeater {
-            model: root.boxes
+            model: root.shownBoxes
 
             Column {
               required property var modelData

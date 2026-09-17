@@ -52,6 +52,7 @@ With the roster open, everything works without the mouse:
 
 | Key | Does |
 |---|---|
+| `/` | search by name or note |
 | `↑` `↓` / `k` `j` | move the selection |
 | `←` `→` / `h` `l` | jump to the previous or next box |
 | `K` `J` | raise or lower the selected project's priority |
@@ -65,6 +66,26 @@ With the roster open, everything works without the mouse:
 The selection is held by project name rather than row position, so tagging a
 project moves the selection with it into its new box instead of landing on
 whatever slid into that row. Collapsed boxes are skipped.
+
+### Search
+
+Every letter is already a command, so search has to be a mode: `/` is what
+frees the alphabet for typing. Letters narrow the roster live against project
+names and notes, `↑` `↓` walk the matches (`j` and `k` are ordinary text in
+here), `Enter` opens the selected one, and `Esc` leaves search.
+
+Folded boxes open while a query is active — a search that cannot see into
+**Ignore** is one you cannot trust, since you would read "no match" as "gone"
+when it is merely ignored. If the match you leave on lives in a folded box,
+that box stays open, so `Esc` never hides what you just found.
+
+The selection survives the query clearing, which is how search reaches the
+commands the mode locks out: `/vibro` `Esc` `K` finds a project and raises its
+priority.
+
+```bash
+omarchy-shell projects search vibro   # open the roster already filtered
+```
 
 ## Settings
 
