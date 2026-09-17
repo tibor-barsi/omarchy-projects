@@ -43,6 +43,10 @@ BarWidget {
   property string busyProject: ""
   property string pickerFor: ""
   property string hoveredProject: ""
+  // The selection is held by name, not by position: tagging a project moves
+  // it to another box and renumbers every row, so an index would silently
+  // start pointing at a different project.
+  property string selectedName: ""
   // Box names the user has folded this session, seeded from each tag's
   // `collapsed` flag the first time a report arrives.
   property var collapsed: ({})
@@ -70,7 +74,89 @@ BarWidget {
   readonly property string updatedLabel: updatedAt !== ""
     ? Qt.formatDateTime(new Date(updatedAt), "HH:mm") : ""
 
-  function close() { popupOpen = false }
+  // The shell's bar-widget panel contract: `opened`, `open()` and `close()`
+  // are what let `omarchy-shell shell toggle <plugin-id>` drive this widget,
+  // and the shell picks the copy on the focused screen rather than whichever
+  // instance happened to register an IPC target first.
+  readonly property bool opened: popupOpen
+
+  function open() {
+    popupOpen = true
+    if (root.selectedIndex < 0 && root.visibleRows.length > 0)
+      root.selectedName = root.visibleRows[0]
+  }
+
+  function close() {
+    popupOpen = false
+    pickerFor = ""
+  }
+
+  // Every row the user can currently move to, in the order they are drawn.
+  readonly property var visibleRows: {
+    var out = []
+    for (var i = 0; i < root.boxes.length; i++) {
+      var box = root.boxes[i]
+      if (root.isCollapsed(box.name)) continue
+      var items = box.projects
+      for (var j = 0; j < items.length; j++) out.push(items[j].name)
+    }
+    return out
+  }
+
+  readonly property int selectedIndex: root.visibleRows.indexOf(root.selectedName)
+
+  // Keyboard acts on the selection; the mouse acts on whatever it is over.
+  function targetRow() {
+    return root.selectedName !== "" ? root.selectedName : root.hoveredProject
+  }
+
+  function moveSelection(delta) {
+    var n = root.visibleRows.length
+    if (n === 0) { root.selectedName = ""; return }
+    var next = root.selectedIndex < 0 ? (delta > 0 ? 0 : n - 1)
+      : root.selectedIndex + delta
+    root.selectedName = root.visibleRows[next < 0 ? n - 1 : (next >= n ? 0 : next)]
+    root.pickerFor = ""
+  }
+
+  // Left/right jump a whole box, which is what makes 44 rows navigable.
+  function moveBox(delta) {
+    var n = root.visibleRows.length
+    if (n === 0) return
+    var starts = []
+    var seen = 0
+    for (var i = 0; i < root.boxes.length; i++) {
+      var box = root.boxes[i]
+      if (root.isCollapsed(box.name) || box.projects.length === 0) continue
+      starts.push(seen)
+      seen += box.projects.length
+    }
+    if (starts.length === 0) return
+    var current = 0
+    for (var s = 0; s < starts.length; s++)
+      if (starts[s] <= root.selectedIndex) current = s
+    var target = current + delta
+    root.selectedName = root.visibleRows[starts[target < 0 ? starts.length - 1
+      : (target >= starts.length ? 0 : target)]]
+    root.pickerFor = ""
+  }
+
+  function activateSelected() {
+    if (root.selectedName !== "") root.openProject(root.selectedName)
+  }
+
+  // Rows sit inside nested Columns, so their own y says nothing about where
+  // they are in the scrolled content; map into the content column instead.
+  function ensureVisible(item) {
+    if (!item || !flick.visible) return
+    var pos = item.mapToItem(column, 0, 0)
+    if (pos.y < flick.contentY)
+      flick.contentY = Math.max(0, pos.y)
+    else if (pos.y + item.height > flick.contentY + flick.height)
+      flick.contentY = Math.min(
+        Math.max(0, flick.contentHeight - flick.height),
+        pos.y + item.height - flick.height)
+  }
 
   function refresh() {
     if (proc.running) return
@@ -307,7 +393,8 @@ BarWidget {
 
     onPressed: function(button) {
       if (button === Qt.RightButton) root.refresh()
-      else root.popupOpen = !root.popupOpen
+      else if (root.popupOpen) root.close()
+      else root.open()
     }
   }
 
@@ -324,14 +411,26 @@ BarWidget {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
-      onCloseRequested: root.close()
+      onCloseRequested: {
+        if (root.pickerFor !== "") root.pickerFor = ""
+        else root.close()
+      }
+      onMoveRequested: function(dx, dy) {
+        if (dy !== 0) root.moveSelection(dy)
+        else if (dx !== 0) root.moveBox(dx)
+      }
+      onReturnRequested: root.activateSelected()
+      onDeleteRequested: root.clearTag(root.targetRow())
       onTextKey: function(t) {
         if (t === "r" || t === "R") root.refresh()
         else if (t === "e" || t === "E") root.editPriorities()
-        else if (t === "0" && root.hoveredProject !== "")
-          root.clearTag(root.hoveredProject)
-        else if (t >= "1" && t <= "9" && root.hoveredProject !== "")
-          root.assignByIndex(root.hoveredProject, parseInt(t) - 1)
+        else if (t === "t" || t === "T") {
+          if (root.targetRow() !== "") root.openPicker(root.targetRow())
+        } else if (t === "c" || t === "C") {
+          if (root.targetRow() !== "") root.captureLayout(root.targetRow())
+        } else if (t === "0") root.clearTag(root.targetRow())
+        else if (t >= "1" && t <= "9")
+          root.assignByIndex(root.targetRow(), parseInt(t) - 1)
       }
 
       Flickable {
@@ -465,12 +564,17 @@ BarWidget {
                 Rectangle {
                   id: row
                   readonly property var modelData: rowItem.modelData
+                  readonly property bool selected:
+                    root.selectedName === rowItem.modelData.name
+                  onSelectedChanged: if (selected) root.ensureVisible(rowItem)
                   width: column.width
                   height: nameText.implicitHeight + noteText.height + Style.space(10)
                   radius: Style.cornerRadius
-                  color: area.containsMouse
-                    ? Style.hoverFillFor(root.bar.foreground, root.bar.foreground)
-                    : "transparent"
+                  color: selected
+                    ? Style.selectedFillFor(root.bar.foreground, root.bar.foreground)
+                    : (area.containsMouse
+                      ? Style.hoverFillFor(root.bar.foreground, root.bar.foreground)
+                      : "transparent")
 
                   Row {
                     anchors.left: parent.left
@@ -584,6 +688,7 @@ BarWidget {
                     onExited: if (root.hoveredProject === row.modelData.name)
                       root.hoveredProject = ""
                     onClicked: function(mouse) {
+                      root.selectedName = row.modelData.name
                       if (mouse.button === Qt.RightButton)
                         root.openPicker(row.modelData.name)
                       else
@@ -659,8 +764,8 @@ BarWidget {
             textFormat: Text.PlainText
             width: parent.width
             wrapMode: Text.WordWrap
-            text: "Click opens  ·  right-click tags  ·  1-9/0 tag the hovered row"
-              + "  ·  󰆓 saves the live layout  ·  e: edit file  ·  r: refresh"
+            text: "↑↓ select  ·  ←→ jump box  ·  enter opens  ·  t tag  ·  1-9 set, 0/x clear"
+              + "  ·  c saves the live layout  ·  e edit file  ·  r refresh  ·  esc close"
             color: Qt.darker(root.bar.foreground, 1.8)
             font.family: root.bar.fontFamily
             font.pixelSize: Style.font.caption

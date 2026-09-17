@@ -37,6 +37,34 @@ omarchy plugin enable io.github.tibor-barsi.projects left
 Note that Omarchy refuses symlinks *inside* a plugin folder, so the plugin
 directory itself has to be a real directory.
 
+## Keyboard
+
+Bind the roster to a key — `shell toggle` is the right route, because the shell
+opens the copy on the *focused* screen, which the widget's own IPC cannot do:
+
+```lua
+-- ~/.config/hypr/bindings.lua
+hl.unbind("SUPER + SHIFT + P")
+o.bind("SUPER + SHIFT + P", "Projects", "omarchy-shell shell toggle io.github.tibor-barsi.projects")
+```
+
+With the roster open, everything works without the mouse:
+
+| Key | Does |
+|---|---|
+| `↑` `↓` / `k` `j` | move the selection |
+| `←` `→` / `h` `l` | jump to the previous or next box |
+| `Enter` | open the selected project in Herdr |
+| `t` | open the tag picker for the selected row |
+| `1`–`9` | set the tag by box number |
+| `0` / `x` | clear the tag |
+| `c` | save the live workspace as this project's layout |
+| `e` | open the state file · `r` refresh · `Esc` close |
+
+The selection is held by project name rather than row position, so tagging a
+project moves the selection with it into its new box instead of landing on
+whatever slid into that row. Collapsed boxes are skipped.
+
 ## Settings
 
 Configured through the Omarchy settings panel, or directly in
