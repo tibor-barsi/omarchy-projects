@@ -120,10 +120,10 @@ outside the plugin folder so `omarchy plugin update` cannot overwrite it:
       "collapsed": true, "muted": true }
   ],
   "projects": {
-    "running": ["my-project", "my-project"],
+    "running": ["my-project", "another-project"],
     "blocked": []
   },
-  "notes":  { "my-project": "finish the EMA release" },
+  "notes":  { "my-project": "finish the release" },
   "hidden": ["_Archive"]
 }
 ```
