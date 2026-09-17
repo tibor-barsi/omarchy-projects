@@ -87,6 +87,40 @@ V1_LANE_MAP = {"focus": "running", "active": "running",
 DEFAULT_ROOT = "~/data/projects"
 GIT_TIMEOUT = 5
 HERDR_TIMEOUT = 20
+
+# Herdr reports failures as a JSON object on *stderr*, not stdout. A few codes
+# describe an ordinary situation rather than a fault, and deserve a sentence a
+# person can act on instead of the raw payload.
+HERDR_FRIENDLY = {
+    "server_not_running": "Herdr is not running. Opening a project starts it.",
+}
+AGENT_RE = re.compile(r"[^a-z0-9_-]+")
+
+
+class HerdrError(RuntimeError):
+    """Raised when the Herdr CLI cannot be reached or refuses a command."""
+
+
+class LayoutError(RuntimeError):
+    """Raised when a project's layout file cannot be read or understood."""
+
+
+# --------------------------------------------------------------------------
+# State
+# --------------------------------------------------------------------------
+
+def default_layout_path() -> Path:
+    """Return the path of the fallback layout shared by every project.
+
+    Returns
+    -------
+    pathlib.Path
+        ``default-layout.toml`` beside the state file, so it survives plugin
+        updates the same way the tags do.
+    """
+    return state_path().parent / "default-layout.toml"
+
+
 AGENT_RE = re.compile(r"[^a-z0-9_-]+")
 
 
@@ -455,6 +489,72 @@ def git_info(path: Path) -> dict:
 # Herdr
 # --------------------------------------------------------------------------
 
+def _herdr_payload(stdout: str, stderr: str) -> dict | None:
+    """Find Herdr's JSON response on either output stream.
+
+    Parameters
+    ----------
+    stdout, stderr : str
+        The captured streams.
+
+    Returns
+    -------
+    dict or None
+        The decoded response, or ``None`` when neither stream carried one.
+
+    Notes
+    -----
+    Successful responses arrive on stdout and failures on stderr, so scanning
+    only stdout leaves an error looking like no response at all — and the raw
+    payload ends up quoted at the user.
+    """
+    for stream in (stdout, stderr):
+        for line in reversed(stream.splitlines()):
+            line = line.strip()
+            if not line.startswith("{"):
+                continue
+            try:
+                return json.loads(line)
+            except ValueError:
+                continue
+    return None
+
+
+def _herdr_failure(payload: dict | None, proc, args: list[str]) -> str:
+    """Turn a failed Herdr invocation into one readable sentence.
+
+    Parameters
+    ----------
+    payload : dict or None
+        Decoded response, when there was one.
+    proc : subprocess.CompletedProcess
+        The finished process, for its streams and exit status.
+    args : list of str
+        Arguments the CLI was called with, used as a last resort.
+
+    Returns
+    -------
+    str
+        A short message. Known codes get wording that says what to do about
+        them; anything else falls back to Herdr's own message.
+    """
+    error = (payload or {}).get("error")
+    if isinstance(error, dict):
+        friendly = HERDR_FRIENDLY.get(str(error.get("code") or ""))
+        if friendly:
+            return friendly
+        message = error.get("message") or error.get("code")
+        if message:
+            return str(message)[:200]
+    elif error:
+        return str(error)[:200]
+
+    detail = (proc.stderr or "").strip() or (proc.stdout or "").strip()
+    if detail and not detail.startswith("{"):
+        return detail.splitlines()[0][:200]
+    return f"herdr {' '.join(args)} exited {proc.returncode}"
+
+
 def herdr_call(
     args: list[str], timeout: int = HERDR_TIMEOUT, expect_json: bool = True
 ) -> dict:
@@ -497,35 +597,17 @@ def herdr_call(
     except OSError as exc:
         raise HerdrError(str(exc)) from None
 
+    payload = _herdr_payload(proc.stdout, proc.stderr)
+
     if not expect_json:
         if proc.returncode != 0:
-            detail = (proc.stderr.strip() or proc.stdout.strip()
-                      or f"exited {proc.returncode}")
-            raise HerdrError(detail.splitlines()[0][:200])
+            raise HerdrError(_herdr_failure(payload, proc, args))
         return {}
 
-    payload = None
-    for line in reversed(proc.stdout.splitlines()):
-        line = line.strip()
-        if line.startswith("{"):
-            try:
-                payload = json.loads(line)
-            except ValueError:
-                continue
-            break
-
     if payload is None:
-        detail = (proc.stderr.strip() or proc.stdout.strip() or "no response")
-        raise HerdrError(detail.splitlines()[0][:200])
-
-    error = payload.get("error")
-    if error:
-        # Herdr reports failures as {"code": ..., "message": ...}; surface the
-        # message rather than the whole object, which ends up in warnings.
-        detail = error.get("message") or error.get("code") if isinstance(error, dict) else error
-        raise HerdrError(str(detail or error)[:200])
-    if proc.returncode != 0:
-        raise HerdrError(f"herdr {' '.join(args)} exited {proc.returncode}")
+        raise HerdrError(_herdr_failure(payload, proc, args))
+    if payload.get("error") or proc.returncode != 0:
+        raise HerdrError(_herdr_failure(payload, proc, args))
 
     result = payload.get("result")
     return result if isinstance(result, dict) else {}

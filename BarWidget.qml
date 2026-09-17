@@ -512,8 +512,9 @@ BarWidget {
             visible: !root.ok || root.herdrError !== ""
             width: parent.width
             wrapMode: Text.WordWrap
-            text: !root.ok ? (root.errorText || "Loading…")
-              : "Herdr unavailable — " + root.herdrError
+            text: !root.ok ? (root.errorText || "Loading…") : root.herdrError
+            maximumLineCount: 3
+            elide: Text.ElideRight
             color: root.bar.urgent
             font.family: root.bar.fontFamily
             font.pixelSize: Style.font.bodySmall
