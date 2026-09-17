@@ -117,6 +117,19 @@ than being dropped, so a rename is visible instead of silent.
 
 ## Layouts
 
+### The shared default
+
+A project with no layout of its own falls back to a shared default, and only
+then to a single pane. Set it from any workspace you like the shape of:
+
+```bash
+python3 projects.py capture <project> --default
+```
+
+That writes `~/.local/state/omarchy-projects/default-layout.toml`, next to the
+tags and equally safe from plugin updates. Delete the file to go back to a
+single pane.
+
 ### Capturing one
 
 The quickest way to get a layout is to stop writing one. Arrange the workspace
@@ -134,9 +147,12 @@ python3 projects.py capture my-project
 ```
 
 Capture reads the split tree out of Herdr, including each split's direction and
-ratio, the working directory of every pane, and whatever each pane is running —
-an agent by kind, or the foreground command. A pane sitting at a bare shell
-prompt is recorded as just a pane.
+ratio, the working directory of every pane, and whatever each pane is running.
+An agent is recorded by kind (`agent = "claude"`), and any other foreground
+program by its command line (`cmd = "lazygit"`), so a pane running lazygit,
+btop or an editor comes back on the next open. A pane sitting at a bare shell
+prompt is recorded as just a pane. It is a snapshot of that moment: a command
+that has already exited is not recorded, because nothing is running in it.
 
 ### Writing one by hand
 

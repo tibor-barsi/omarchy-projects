@@ -16,9 +16,10 @@ Two jobs live in this file.
 ``tag <name> <tag>``
     Move a project into one tag's box, or untag it with ``-``.
 
-``capture <name>``
+``capture <name> [--default]``
     Write the project's live Herdr workspace out as its ``.herdr/layout.toml``,
-    so a layout arranged by hand becomes the one it reopens with.
+    so a layout arranged by hand becomes the one it reopens with. With
+    ``--default``, write it as the layout every project without one uses.
 
 The report path never raises. Every failure is reported as ``ok: false`` with
 an ``error`` string, so a broken backend degrades to an error pill in the bar
@@ -100,6 +101,18 @@ class LayoutError(RuntimeError):
 # --------------------------------------------------------------------------
 # State
 # --------------------------------------------------------------------------
+
+def default_layout_path() -> Path:
+    """Return the path of the fallback layout shared by every project.
+
+    Returns
+    -------
+    pathlib.Path
+        ``default-layout.toml`` beside the state file, so it survives plugin
+        updates the same way the tags do.
+    """
+    return state_path().parent / "default-layout.toml"
+
 
 def state_path() -> Path:
     """Return the path of the priority state file.
@@ -709,8 +722,8 @@ def load_layout(target: Path, default_agent: str) -> dict:
     target : pathlib.Path
         Project directory.
     default_agent : str
-        Agent kind to start in projects that ship no layout file. Empty means
-        open a plain shell.
+        Agent kind to start when neither the project nor the shared default
+        supplies a layout. Empty means open a plain shell.
 
     Returns
     -------
@@ -726,10 +739,12 @@ def load_layout(target: Path, default_agent: str) -> dict:
     -----
     Layouts live in the project at ``.herdr/layout.toml`` rather than in this
     plugin, so they travel with the repository to other machines and survive
-    plugin updates.
+    plugin updates. A project without one falls back to the shared default
+    layout, and only then to a single pane.
     """
-    path = target / ".herdr" / "layout.toml"
-    if path.is_file():
+    for path in (target / ".herdr" / "layout.toml", default_layout_path()):
+        if not path.is_file():
+            continue
         try:
             spec = tomllib.loads(path.read_text(encoding="utf-8"))
         except (OSError, tomllib.TOMLDecodeError) as exc:
@@ -1141,8 +1156,8 @@ def _relative_cwd(target: Path, raw: str) -> str:
         return raw
 
 
-def capture_layout(root: Path, project: str) -> dict:
-    """Write a project's live Herdr workspace out as its layout file.
+def capture_layout(root: Path, project: str, as_default: bool = False) -> dict:
+    """Write a project's live Herdr workspace out as a layout file.
 
     Parameters
     ----------
@@ -1150,6 +1165,10 @@ def capture_layout(root: Path, project: str) -> dict:
         Directory holding the projects.
     project : str
         Project name, matched against Herdr workspace labels.
+    as_default : bool, optional
+        Write to the shared default layout instead of the project's own, so
+        the arrangement applies to every project that has no layout of its
+        own.
 
     Returns
     -------
@@ -1239,7 +1258,7 @@ def capture_layout(root: Path, project: str) -> dict:
     if not tabs:
         return {"ok": False, "error": "workspace has no panes to capture"}
 
-    path = target / ".herdr" / "layout.toml"
+    path = default_layout_path() if as_default else target / ".herdr" / "layout.toml"
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists():
         backup = path.with_suffix(".toml.bak")
@@ -1278,9 +1297,9 @@ def render_layout_toml(project: str, tabs: list[dict]) -> str:
     """
     stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
     lines = [
-        f"# Herdr layout for {project}, captured {stamp}.",
+        f"# Herdr layout captured from {project} on {stamp}.",
         "# Regenerate by arranging the workspace and capturing it again;",
-        "# the previous version is kept alongside as layout.toml.bak.",
+        "# the previous version is kept alongside as *.toml.bak.",
         "",
     ]
     order = ("label", "cwd", "agent", "cmd")
@@ -1432,6 +1451,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("value", nargs="?", default="")
     parser.add_argument("--root", default=DEFAULT_ROOT)
     parser.add_argument("--default-agent", default="")
+    parser.add_argument("--default", action="store_true",
+                        help="capture into the shared default layout")
     args = parser.parse_args(argv)
 
     root = Path(os.path.expanduser(args.root)).resolve()
@@ -1475,7 +1496,7 @@ def main(argv: list[str] | None = None) -> int:
         if not args.name:
             print(json.dumps({"ok": False, "error": "no project given"}))
             return 2
-        result = capture_layout(root, args.name)
+        result = capture_layout(root, args.name, as_default=args.default)
         print(json.dumps(result))
         return 0 if result["ok"] else 1
 
