@@ -11,7 +11,8 @@ Two jobs live in this file.
 ``open <name>``
     Focus a project's Herdr workspace when one already exists, otherwise build
     a fresh one from the project's ``.herdr/layout.toml`` (or a default
-    single-pane layout), then raise the Herdr terminal window.
+    layout: agent left, lazygit and a shell right), then raise the Herdr
+    terminal window.
 
 ``tag <name> <tag>``
     Move a project into one tag's box, or untag it with ``-``.
@@ -95,6 +96,7 @@ HERDR_FRIENDLY = {
     "server_not_running": "Herdr is not running. Opening a project starts it.",
 }
 AGENT_RE = re.compile(r"[^a-z0-9_-]+")
+CLAUDE_ARGS = ("--dangerously-skip-permissions",)
 
 
 class HerdrError(RuntimeError):
@@ -854,7 +856,7 @@ def load_layout(target: Path, default_agent: str) -> dict:
     Layouts live in the project at ``.herdr/layout.toml`` rather than in this
     plugin, so they travel with the repository to other machines and survive
     plugin updates. A project without one falls back to the shared default
-    layout, and only then to a single pane.
+    layout, and only then to the one built by ``default_layout``.
     """
     for path in (target / ".herdr" / "layout.toml", default_layout_path()):
         if not path.is_file():
@@ -868,10 +870,91 @@ def load_layout(target: Path, default_agent: str) -> dict:
             return {"tabs": [t for t in tabs if isinstance(t, dict)]}
         raise LayoutError(f"{path}: no [[tabs]] entries")
 
+    return default_layout(target, default_agent)
+
+
+def default_layout(target: Path, default_agent: str) -> dict:
+    """Build the layout for a project that has no layout file of its own.
+
+    Parameters
+    ----------
+    target : pathlib.Path
+        Project directory.
+    default_agent : str
+        Agent kind to start in the left pane. Empty means a plain shell.
+
+    Returns
+    -------
+    dict
+        One tab: the agent on the left, and on the right lazygit above a
+        shell when the project root is a git repository, or the shell alone
+        when it is not. The shell shows ``openspec view`` first when the
+        project has an ``openspec/`` folder.
+
+    Notes
+    -----
+    Built in code rather than read from a file because it depends on what the
+    project contains, which a static layout cannot express. ``openspec view``
+    prints its dashboard and exits, so the pane is left as a usable shell.
+    """
     tab: dict = {"label": "main", "cwd": "."}
     if default_agent:
         tab["agent"] = default_agent
+    if default_agent == "claude":
+        args = list(CLAUDE_ARGS)
+        if claude_has_session(target):
+            args.append("--continue")
+        tab["args"] = args
+
+    panes: list[dict] = []
+    if (target / ".git").exists():
+        panes.append({"name": "git", "from": "root", "direction": "right",
+                      "ratio": 0.5, "cmd": "lazygit"})
+        shell = {"from": "git", "direction": "down", "ratio": 0.5}
+    else:
+        shell = {"from": "root", "direction": "right", "ratio": 0.5}
+    if (target / "openspec").is_dir():
+        shell["cmd"] = "openspec view"
+    panes.append(shell)
+
+    tab["panes"] = panes
     return {"tabs": [tab]}
+
+
+def claude_has_session(cwd: Path) -> bool:
+    """Tell whether Claude Code has a conversation to continue in a folder.
+
+    Parameters
+    ----------
+    cwd : pathlib.Path
+        Folder Claude will be started in.
+
+    Returns
+    -------
+    bool
+        ``True`` when at least one saved session for that folder holds a
+        user message.
+
+    Notes
+    -----
+    ``claude --continue`` in a folder with nothing to continue prints "No
+    conversation found to continue" and exits, leaving a dead pane, so the
+    flag is only passed when this says there is something to resume. Claude
+    keeps sessions as JSONL files under ``~/.claude/projects/<folder>``, where
+    ``<folder>`` is the absolute path with every character other than a
+    letter or digit replaced by ``-``. A file with no user message is what an
+    aborted start leaves behind, and does not count.
+    """
+    base = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
+    folder = base / "projects" / re.sub(r"[^a-zA-Z0-9]", "-", str(cwd))
+    for session in folder.glob("*.jsonl"):
+        try:
+            with session.open(encoding="utf-8", errors="replace") as handle:
+                if any('"type":"user"' in line for line in handle):
+                    return True
+        except OSError:
+            continue
+    return False
 
 
 def resolve_cwd(target: Path, spec: dict) -> str:

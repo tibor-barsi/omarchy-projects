@@ -19,7 +19,7 @@
     "defaults": {
       "projectsDir": "~/data/projects",
       "refreshIntervalSec": 120,
-      "defaultAgent": "none"
+      "defaultAgent": "claude"
     },
     "schema": [
       {
@@ -43,8 +43,8 @@
         "type": "enum",
         "label": "Default agent",
         "options": ["none", "claude", "codex", "opencode", "gemini"],
-        "defaultValue": "none",
-        "description": "Agent started for projects with no .herdr/layout.toml. 'none' opens a plain shell."
+        "defaultValue": "claude",
+        "description": "Agent started in the left pane for projects with no .herdr/layout.toml. 'none' opens a plain shell."
       }
     ]
   }

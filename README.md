@@ -96,7 +96,7 @@ Configured through the Omarchy settings panel, or directly in
 |---|---|---|
 | `projectsDir` | `~/data/projects` | Folder holding one subdirectory per project |
 | `refreshIntervalSec` | `120` | How often the roster refreshes |
-| `defaultAgent` | `none` | Agent started for projects with no layout file |
+| `defaultAgent` | `claude` | Agent started in the left pane for projects with no layout file; `none` for a shell |
 
 ## Tags
 
@@ -174,18 +174,45 @@ than being dropped, so a rename is visible instead of silent.
 
 ## Layouts
 
+### The built-in default
+
+A project with no layout file opens with `defaultAgent` (Claude unless changed)
+on the left, in the project root. The right half depends on what the project
+contains:
+
+| Project has | Right half |
+|---|---|
+| git and `openspec/` | lazygit above, `openspec view` then a shell below |
+| git only | lazygit above, a shell below |
+| `openspec/` only | `openspec view`, then a shell |
+| neither | a shell |
+
+Git means a `.git` in the project root; a repository only in `codebase/` does
+not count. `openspec view` prints its dashboard and exits, which is why the
+pane is left as a shell.
+
+Claude is started as an agent with `--dangerously-skip-permissions`, plus
+`--continue` when there is a saved conversation for the project folder.
+Without that check `--continue` fails in a folder that has never had one: it
+prints "No conversation found to continue" and exits, leaving a dead pane.
+A session file counts only if it holds a user message; an aborted start leaves
+one with metadata alone. The first time Claude opens in a folder it asks
+whether to trust it, with the cursor on "No, exit" — Herdr reports the agent
+as blocked until that is answered.
+
 ### The shared default
 
-A project with no layout of its own falls back to a shared default, and only
-then to a single pane. Set it from any workspace you like the shape of:
+A shared default layout, if present, replaces the built-in one for every
+project without a layout of its own. Set it from any workspace you like the
+shape of:
 
 ```bash
 python3 projects.py capture <project> --default
 ```
 
 That writes `~/.local/state/omarchy-projects/default-layout.toml`, next to the
-tags and equally safe from plugin updates. Delete the file to go back to a
-single pane.
+tags and equally safe from plugin updates. Delete the file to go back to the
+built-in default.
 
 ### Capturing one
 
@@ -247,8 +274,7 @@ tree be written as a flat list, and so what lets a captured layout reproduce
 the workspace exactly. A pane-level failure is collected as a warning rather
 than aborting the layout, so a partial workspace still opens.
 
-Projects without a layout file get a single pane in the project root, running
-`defaultAgent` if one is configured.
+Projects without a layout file get the built-in default described above.
 
 ## Scripting
 
