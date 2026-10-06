@@ -612,7 +612,6 @@ BarWidget {
       Flickable {
         id: flick
         anchors.fill: parent
-        anchors.rightMargin: Style.space(10)
         contentWidth: width
         contentHeight: column.implicitHeight
         readonly property real implicitHeight: column.implicitHeight
@@ -620,7 +619,12 @@ BarWidget {
         boundsBehavior: Flickable.StopAtBounds
         flickableDirection: Flickable.VerticalFlick
         interactive: contentHeight > height
-        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+        // No visible scrollbar: the shell's themed ScrollBar overlays the
+        // content and is wider than any safe fixed gutter, so it drew over
+        // the right-aligned text (same bug as the api-cost widget). Wheel +
+        // flick still scroll. Requires a shell restart to take effect —
+        // plugin hot-reload does not apply ScrollBar changes reliably.
+        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AlwaysOff }
 
         Column {
           id: column
