@@ -455,6 +455,12 @@ def discover(root: Path, hidden: list[str]) -> list[str]:
 def _git(path: Path, *args: str) -> str | None:
     """Run a git command inside ``path`` and return trimmed stdout.
 
+    The repository's own fsmonitor and hooks settings are switched off, so a
+    setting planted in a project's ``.git/config`` (for example one synced
+    from another machine) cannot make this periodic check run a program.
+    ``--no-optional-locks`` keeps ``git status`` from rewriting the index,
+    which would otherwise make the file look changed to sync tools.
+
     Parameters
     ----------
     path : pathlib.Path
@@ -469,7 +475,8 @@ def _git(path: Path, *args: str) -> str | None:
     """
     try:
         proc = subprocess.run(
-            ["git", "-C", str(path), *args],
+            ["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
+             "--no-optional-locks", "-C", str(path), *args],
             capture_output=True,
             text=True,
             timeout=GIT_TIMEOUT,
